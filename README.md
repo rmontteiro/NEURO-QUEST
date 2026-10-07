@@ -2,7 +2,7 @@
 
 Mesa de portfólio Web3 para uma VPS compartilhada. Três serviços sobem em contêineres separados: a API (FastAPI), o motor de leitura (NumPy e pandas) e a mesa (Next.js). O motor tem teto de CPU e memória para não tomar a máquina das automações que já rodam no host.
 
-Os preços são os que você lança. Não há feed de mercado e não há modelo de linguagem. A leitura calcula concentração (HHI), ativos efetivos e peso por rede.
+Os preços são os que você lança. Não há feed de mercado. A leitura calcula concentração (HHI), ativos efetivos e peso por rede. O conselho Neuro-Quest Capital narra esses números: com `GEMINI_API_KEY` a fala vem do Gemini via LangChain; sem a chave, uma crônica local mantém os três personagens e os mesmos números.
 
 ## Premissas de host
 
@@ -65,7 +65,11 @@ A mesa fica em [http://127.0.0.1:4181](http://127.0.0.1:4181).
 
 - `backend` guarda as posições em SQLite e pede a leitura ao motor.
 - `ai-engine` calcula HHI, peso por rede e notas determinísticas. `OPENBLAS_NUM_THREADS=1` impede que a biblioteca numérica espalhe threads pelo host. `oom_score_adj: 400` faz o kernel preferir encerrar o motor se a VPS inteira ficar sem RAM.
-- `frontend` é a mesa. O browser só fala com o Next.js; o Next.js fala com a API.
+- `frontend` é a mesa. O browser só fala com o Next.js; o Next.js fala com a API. Em `/reino`, o conselho lê a carteira e a tela forja uma transação não assinada para a Phantom, em Solana e na Base.
+
+## Conselho e transação
+
+`GET /status-reino`, `GET /missoes-ativas` e `GET /analise-risco` são assíncronas. `POST /transacao-nao-assinada` devolve as duas cargas. A que a Phantom assina não transfere tokens: na Solana são memos na mesma transação; na Base o destino é o próprio endereço, com valor zero. As chamadas do SwapRouter02 (`0x2626664c2603336E57B271c5C0b26F421741e481`) e do NonfungiblePositionManager (`0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1`) vêm codificadas à parte e não entram nessa assinatura.
 
 Contêineres rodam sem root, com `cap_drop: ALL`, `no-new-privileges` e sistema de arquivos raiz somente leitura. Logs do Docker giram em 10 MiB × 3 arquivos. `memswap_limit` igual ao teto de RAM impede que o motor estoure o limite via swap.
 
@@ -73,6 +77,6 @@ Contêineres rodam sem root, com `cap_drop: ALL`, `no-new-privileges` e sistema 
 
 ```bash
 ( cd ai-engine && PYTHONPATH=. .venv/bin/python -m unittest tests/test_engine.py )
-( cd backend && PYTHONPATH=. .venv/bin/python -m unittest tests/test_api.py )
+( cd backend && PYTHONPATH=. .venv/bin/python -m unittest discover tests )
 ./scripts/vps.sh budget
 ```

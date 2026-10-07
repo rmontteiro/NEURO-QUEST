@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const ALLOWED = new Set(["health", "positions", "analysis"]);
+const ALLOWED = new Set([
+  "health",
+  "positions",
+  "analysis",
+  "status-reino",
+  "missoes-ativas",
+  "analise-risco",
+  "transacao-nao-assinada",
+]);
 
 function backendBase(): string {
   return (process.env.BACKEND_URL || "http://127.0.0.1:8091").replace(/\/$/, "");

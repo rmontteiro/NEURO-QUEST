@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from app.db import clear_positions, delete_position, init_db, insert_position, list_positions
+from app.reino import router as reino_router
 
 AI_ENGINE_URL = os.environ.get("AI_ENGINE_URL", "http://127.0.0.1:8092").rstrip("/")
 
@@ -19,7 +20,8 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Lastro API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Neuro-Quest Capital", version="1.1.0", lifespan=lifespan)
+app.include_router(reino_router)
 
 
 class PositionIn(BaseModel):

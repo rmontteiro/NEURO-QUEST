@@ -81,6 +81,8 @@ services:
     environment:
       DATA_PATH: /data/lastro.db
       AI_ENGINE_URL: http://ai-engine:8000
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
     volumes:
       - carteira:/data
     tmpfs:

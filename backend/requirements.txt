@@ -2,3 +2,8 @@ fastapi==0.115.12
 uvicorn==0.34.2
 pydantic==2.11.4
 httpx==0.28.1
+langchain-core==1.6.7
+langchain-google-genai==4.4.0
+solders==0.29.0
+web3==8.0.0
+eth-abi==6.0.0

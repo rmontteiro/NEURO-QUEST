@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -174,9 +175,14 @@ export function Desk() {
             A leitura de risco roda no motor isolado, com teto de CPU e memória.
           </p>
         </div>
-        <Badge variant={online ? "secondary" : "destructive"}>
-          {loading ? "Consultando a carteira" : online ? "Carteira no ar" : "Carteira indisponível"}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link href="/reino" className={buttonVariants({ variant: "outline" })}>
+            Conselho do reino
+          </Link>
+          <Badge variant={online ? "secondary" : "destructive"}>
+            {loading ? "Consultando a carteira" : online ? "Carteira no ar" : "Carteira indisponível"}
+          </Badge>
+        </div>
       </header>
 
       <section className="grid gap-3 sm:grid-cols-3" aria-label="Resumo">
