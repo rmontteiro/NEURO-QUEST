@@ -38,9 +38,19 @@ services:
       MKL_NUM_THREADS: "1"
       NUMEXPR_NUM_THREADS: "1"
       MALLOC_ARENA_MAX: "2"
+      FORECAST_PATH: /data/forecasts.json
+      QUANT_SCHEDULER: "1"
+      QUANT_CRON_HOUR: ${QUANT_CRON_HOUR:-4}
+      QUANT_CRON_MINUTE: ${QUANT_CRON_MINUTE:-30}
+      QUANT_IDLE_LOAD_RATIO: ${QUANT_IDLE_LOAD_RATIO:-0.5}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+    volumes:
+      - previsoes:/data
     tmpfs:
       - /tmp:size=128m,mode=1777,uid=1001,gid=1001
+    # egress deixa o motor buscar Binance e FRED. Ele continua sem porta no host.
     networks:
+      - egress
       - internal
     expose:
       - "8000"
@@ -166,11 +176,15 @@ services:
           memory: ${FRONTEND_MEMORY_RESERVATION:-128M}
 
 networks:
-  # Sem rota para fora: o motor só fala com a API.
+  # A API alcança o motor por aqui. Esta rede não sai para a internet.
   internal:
     internal: true
+  # Só o motor entra aqui, para o histórico público da Binance e do FRED.
+  egress:
   edge:
 
 volumes:
   carteira:
     name: lastro_carteira
+  previsoes:
+    name: lastro_previsoes

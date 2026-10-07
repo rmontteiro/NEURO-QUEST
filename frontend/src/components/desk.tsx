@@ -7,9 +7,22 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Analysis, Position, errorMessage, pct, qty, usd } from "@/lib/types";
+import { Analysis, ForecastBook, Position, errorMessage, pct, qty, usd } from "@/lib/types";
 
 const CHAINS = ["ethereum", "solana", "bitcoin", "base", "arbitrum", "polygon", "optimism"];
+
+const ASSET_NAME: Record<string, string> = {
+  BTCUSDT: "Bitcoin",
+  ETHUSDT: "Ether",
+  SOLUSDT: "Solana",
+  NASDAQCOM: "Nasdaq Composite",
+};
+
+const DIRECTION_LABEL = {
+  alta: "Alta",
+  baixa: "Baixa",
+  lateral: "Lateral",
+} as const;
 
 const BAND_LABEL: Record<Analysis["concentration"]["band"], string> = {
   alta: "Concentração alta",
@@ -56,6 +69,9 @@ export function Desk() {
   const [saving, setSaving] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [forecast, setForecast] = useState<ForecastBook | null>(null);
+  const [forecastError, setForecastError] = useState<string | null>(null);
+  const [forecastLoading, setForecastLoading] = useState(true);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -92,12 +108,33 @@ export function Desk() {
     }
   }, []);
 
+  const loadForecasts = useCallback(async () => {
+    setForecastLoading(true);
+    setForecastError(null);
+    try {
+      const response = await fetch("/api/backend/previsoes", { cache: "no-store" });
+      const payload = await readJson(response);
+      if (!response.ok) {
+        setForecast(null);
+        setForecastError(errorMessage(payload, "A previsão diária não chegou."));
+        return;
+      }
+      setForecast(payload as ForecastBook);
+    } catch {
+      setForecast(null);
+      setForecastError("A mesa perdeu contato com a previsão.");
+    } finally {
+      setForecastLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void reload();
+      void loadForecasts();
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [reload]);
+  }, [reload, loadForecasts]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -171,8 +208,8 @@ export function Desk() {
             Lastro
           </p>
           <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-            Mesa de portfólio Web3. Os preços são os que você lançou — não há feed de mercado.
-            A leitura de risco roda no motor isolado, com teto de CPU e memória.
+            Mesa de portfólio Web3. Os preços da carteira são os que você lançou.
+            A previsão diária, quando o turno ocioso grava, vem da Binance e do FRED e não altera esses lançamentos.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -208,6 +245,98 @@ export function Desk() {
             <CardTitle className="text-2xl">{band ? BAND_LABEL[band] : reading ? "Lendo…" : "—"}</CardTitle>
           </CardHeader>
         </Card>
+      </section>
+
+      <section className="flex flex-col gap-3" aria-label="Previsão diária">
+        <div className="space-y-1">
+          <h2 className="font-display text-2xl italic tracking-tight">Previsão do turno ocioso</h2>
+          <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
+            Direção para o pregão seguinte, com stop e alvo. É um estudo estatístico: não é ordem e não move saldo.
+          </p>
+        </div>
+
+        {forecastLoading ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-busy="true" aria-live="polite">
+            <div className="h-28 animate-pulse rounded-xl bg-muted" />
+            <div className="h-28 animate-pulse rounded-xl bg-muted" />
+            <div className="hidden h-28 animate-pulse rounded-xl bg-muted sm:block" />
+            <div className="hidden h-28 animate-pulse rounded-xl bg-muted xl:block" />
+            <p className="text-sm text-muted-foreground sm:col-span-2 xl:col-span-4">Lendo a última previsão…</p>
+          </div>
+        ) : null}
+
+        {forecastError ? (
+          <div
+            role="alert"
+            className="flex flex-col gap-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+          >
+            <p>{forecastError}</p>
+            <Button type="button" variant="outline" onClick={() => void loadForecasts()}>
+              Tentar de novo
+            </Button>
+          </div>
+        ) : null}
+
+        {!forecastLoading && !forecastError && forecast?.status === "erro" ? (
+          <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm">
+            {forecast.erro || "O turno ocioso não conseguiu gravar a previsão."}
+          </div>
+        ) : null}
+
+        {!forecastLoading && !forecastError && (forecast?.ativos?.length ?? 0) === 0 && forecast?.status !== "erro" ? (
+          <div className="rounded-lg border border-dashed border-border px-4 py-8 text-sm leading-relaxed text-muted-foreground">
+            O turno ocioso ainda não gravou uma previsão.
+          </div>
+        ) : null}
+
+        {(forecast?.ativos?.length ?? 0) > 0 ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {forecast?.ativos?.map((asset) => (
+              <Card key={asset.ativo} size="sm">
+                <CardHeader>
+                  <CardDescription>
+                    {asset.classe === "indice_acao" ? "Índice" : "Cripto"} · {asset.horizonte ?? "1d"}
+                  </CardDescription>
+                  <CardTitle className="flex items-center justify-between gap-2 text-xl">
+                    <span>{ASSET_NAME[asset.ativo] ?? asset.ativo}</span>
+                    <Badge
+                      variant={
+                        asset.direcao === "baixa" ? "destructive" : asset.direcao === "alta" ? "default" : "outline"
+                      }
+                    >
+                      {DIRECTION_LABEL[asset.direcao] ?? asset.direcao}
+                    </Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+                  <div>
+                    <p className="text-muted-foreground">Confiança</p>
+                    <p className="font-mono tabular-nums">{pct.format(asset.confianca)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Referência</p>
+                    <p className="font-mono tabular-nums">{usd.format(asset.preco_referencia)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Stop</p>
+                    <p className="font-mono tabular-nums">{usd.format(asset.stop_loss)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Alvo</p>
+                    <p className="font-mono tabular-nums">{usd.format(asset.take_profit)}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : null}
+
+        {forecast?.nota_ouro ? (
+          <p className="text-xs leading-relaxed text-muted-foreground">{forecast.nota_ouro}</p>
+        ) : null}
+        {forecast?.gerado_em ? (
+          <p className="text-xs text-muted-foreground">Gerada em {forecast.gerado_em}.</p>
+        ) : null}
       </section>
 
       {loadError ? (

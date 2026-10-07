@@ -51,6 +51,11 @@ class ApiTests(unittest.TestCase):
         response = self.client.post("/analysis")
         self.assertEqual(response.status_code, 503)
 
+    def test_previsoes_reports_unavailable_engine(self) -> None:
+        response = self.client.get("/previsoes")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("motor quantitativo", response.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

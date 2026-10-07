@@ -64,7 +64,7 @@ A mesa fica em [http://127.0.0.1:4181](http://127.0.0.1:4181).
 ## O que cada serviço faz
 
 - `backend` guarda as posições em SQLite e pede a leitura ao motor.
-- `ai-engine` calcula HHI, peso por rede e notas determinísticas. `OPENBLAS_NUM_THREADS=1` impede que a biblioteca numérica espalhe threads pelo host. `oom_score_adj: 400` faz o kernel preferir encerrar o motor se a VPS inteira ficar sem RAM.
+- `ai-engine` calcula HHI, peso por rede e notas determinísticas. No mesmo processo, o turno das 04:30 UTC treina a previsão diária se a carga do host estiver ociosa. `OPENBLAS_NUM_THREADS=1` impede que a biblioteca numérica espalhe threads pelo host. `oom_score_adj: 400` faz o kernel preferir encerrar o motor se a VPS inteira ficar sem RAM. O motor não publica porta no host; a rede `egress` só existe para ele buscar a Binance e o FRED.
 - `frontend` é a mesa. O browser só fala com o Next.js; o Next.js fala com a API. Em `/reino`, o conselho lê a carteira e a tela forja uma transação não assinada para a Phantom, em Solana e na Base.
 
 ## Conselho e transação
@@ -73,10 +73,22 @@ A mesa fica em [http://127.0.0.1:4181](http://127.0.0.1:4181).
 
 Contêineres rodam sem root, com `cap_drop: ALL`, `no-new-privileges` e sistema de arquivos raiz somente leitura. Logs do Docker giram em 10 MiB × 3 arquivos. `memswap_limit` igual ao teto de RAM impede que o motor estoure o limite via swap.
 
+## Previsão diária
+
+O turno usa APScheduler dentro do motor, às 04:30 UTC, com uma instância por vez. Se a carga de 1 minuto passar de `QUANT_IDLE_LOAD_RATIO` (padrão 0,5) vezes o número de CPUs, o treino espera o próximo dia. O mesmo comando roda fora do processo, quando o operador quiser forçar:
+
+```bash
+cd ai-engine && QUANT_FORCE=1 FORECAST_PATH=data/forecasts.json PYTHONPATH=. .venv/bin/python -m app.quant.job
+```
+
+Cripto: BTCUSDT, ETHUSDT e SOLUSDT na Binance (e, se a API principal recusar, em `data-api.binance.vision`). Macro: dólar amplo `DTWEXBGS`, euro `DEXUSEU` e Brent `DCOILBRENTEU` no FRED. Com `FRED_API_KEY`, a leitura usa a API; sem chave, usa o CSV público. Ações individuais não estão nesse par de fontes, então a manga de bolsa é o Nasdaq Composite, série `NASDAQCOM`, marcada como índice. A série LBMA de ouro saiu do FRED em janeiro de 2022; quando ela não tem leitura recente, o ouro entra pelo PAXGUSDT e o JSON registra `fonte_ouro`.
+
+Cada ativo sai com direção (`alta`, `baixa` ou `lateral`), confiança, preço de referência, stop e alvo para o pregão seguinte. O corte é cronológico, 80% treino e 20% teste. A validação cruzada `TimeSeriesSplit` só corre dentro do treino. A rede é um MLP em PyTorch, com retropropagação, e o ajuste escolhe o tamanho da camada e a taxa de aprendizado nessa validação, com `ReduceLROnPlateau` e parada antecipada. `GET /forecasts` no motor, e `GET /previsoes` na API, devolvem o último JSON. Nenhum dos dois treina na hora do pedido. A previsão não é ordem e não move saldo.
+
 ## Testes
 
 ```bash
-( cd ai-engine && PYTHONPATH=. .venv/bin/python -m unittest tests/test_engine.py )
+( cd ai-engine && PYTHONPATH=. QUANT_SCHEDULER=0 .venv/bin/python -m unittest discover tests )
 ( cd backend && PYTHONPATH=. .venv/bin/python -m unittest discover tests )
 ./scripts/vps.sh budget
 ```

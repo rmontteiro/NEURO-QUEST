@@ -112,3 +112,18 @@ def analysis() -> dict[str, Any]:
             detail="O motor de leitura não respondeu. A lista da carteira continua disponível.",
         ) from exc
     return response.json()
+
+
+@app.get("/previsoes")
+def previsoes() -> dict[str, Any]:
+    engine = os.environ.get("AI_ENGINE_URL", "http://127.0.0.1:8092").rstrip("/")
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            response = client.get(f"{engine}/forecasts")
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="O motor quantitativo não respondeu. A mesa segue sem previsão nova.",
+        ) from exc
+    return response.json()

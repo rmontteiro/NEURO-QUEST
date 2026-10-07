@@ -16,6 +16,28 @@ export type Holding = {
   weight: number;
 };
 
+export type ForecastAsset = {
+  ativo: string;
+  classe: "cripto" | "indice_acao" | string;
+  direcao: "alta" | "baixa" | "lateral";
+  confianca: number;
+  preco_referencia: number;
+  stop_loss: number;
+  take_profit: number;
+  horizonte?: string;
+};
+
+export type ForecastBook = {
+  status?: string;
+  aviso?: string;
+  mensagem?: string;
+  gerado_em?: string;
+  nota_ouro?: string;
+  fonte_ouro?: string;
+  erro?: string | null;
+  ativos?: ForecastAsset[];
+};
+
 export type Analysis = {
   total_usd: number;
   priced_count: number;

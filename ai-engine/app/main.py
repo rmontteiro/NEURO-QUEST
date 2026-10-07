@@ -1,11 +1,23 @@
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator
 
 from app.engine import analyze
+from app.quant.job import AVISO, start_scheduler
+from app.quant.store import load_forecast
 
-app = FastAPI(title="Lastro — motor de leitura", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    scheduler = start_scheduler()
+    yield
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="Lastro — motor de leitura", version="1.1.0", lifespan=lifespan)
 
 
 class PositionIn(BaseModel):
@@ -46,3 +58,23 @@ def health() -> dict[str, str]:
 def analyze_route(body: AnalyzeIn) -> dict[str, Any]:
     payload = [item.model_dump() for item in body.positions]
     return analyze(payload)
+
+
+@app.get("/forecasts")
+def forecasts() -> dict[str, Any]:
+    document = load_forecast()
+    if document is None:
+        return {
+            "status": "vazio",
+            "ativos": [],
+            "aviso": AVISO,
+            "mensagem": "O turno ocioso ainda não gravou uma previsão.",
+        }
+    return document
+
+
+@app.post("/forecasts/run")
+def forecasts_run() -> dict[str, Any]:
+    from app.quant.job import run_forecast
+
+    return run_forecast(force=False)
