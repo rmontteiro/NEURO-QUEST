@@ -209,11 +209,19 @@ async def load_snapshot() -> dict[str, Any]:
         fonte_numeros = "contingencia"
     orders = propose(positions, analysis)
     concentration = analysis.get("concentration") or {}
+    priced = _priced(positions)
+    booked = sum(row["value"] for row in priced)
+    carteira = [
+        {"simbolo": str(row["symbol"]).upper(), "peso": round(row["value"] / booked, 4)}
+        for row in priced
+        if booked > 0
+    ]
     return {
         "posicoes": len(positions),
         "total_usd": analysis.get("total_usd", 0.0),
         "fonte_numeros": fonte_numeros,
         "concentracao": concentration,
+        "carteira": carteira,
         "ordens": orders,
         "missoes": mission_lines(orders),
     }

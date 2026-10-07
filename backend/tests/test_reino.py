@@ -42,6 +42,8 @@ class ReinoTests(unittest.TestCase):
                 [order["tipo"] for order in body["dados"]["ordens"]],
                 ["venda", "compra", "stop", "pool"],
             )
+            self.assertGreaterEqual(len(body["dados"]["carteira"]), 1)
+            self.assertIn("peso", body["dados"]["carteira"][0])
 
     def test_unsigned_bundle_route(self) -> None:
         response = self.client.post(

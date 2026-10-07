@@ -2,12 +2,19 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { errorMessage } from "@/lib/types";
+import { SalaDoTrono } from "@/components/sala-do-trono";
+import { errorMessage, usd } from "@/lib/types";
+import type { ActorId } from "@/lib/rotina";
+
+type Order = {
+  tipo: string;
+  simbolo: string;
+  simbolo_par: string | null;
+  quantidade: number;
+  preco_usd: number;
+};
+
+type Holding = { simbolo: string; peso: number };
 
 type Speech = {
   agente: string;
@@ -17,34 +24,18 @@ type Speech = {
   aviso: string | null;
   fonte_numeros: string;
   dados: {
-    ordens: { tipo: string; simbolo: string; simbolo_par: string | null; quantidade: number; preco_usd: number }[];
+    ordens: Order[];
     missoes: string[];
+    carteira?: Holding[];
+    total_usd?: number;
+    concentracao?: { hhi?: number; band?: string; top_symbol?: string | null };
   };
 };
 
-type CallPreview = {
-  tipo: string;
-  contrato: string;
-  funcao: string;
-  data: string;
-  incluida_na_transacao: boolean;
-};
-
 type Bundle = {
-  efeito: string;
   move_tokens: boolean;
-  ordens: string[];
-  solana: {
-    serialized_base64: string;
-    blockhash_provisorio: boolean;
-    instrucoes: string[];
-    tamanho_bytes: number;
-  } | null;
-  base: {
-    chain_id: number;
-    transacao: Record<string, string>;
-    chamadas_prontas: CallPreview[];
-  } | null;
+  solana: { serialized_base64: string } | null;
+  base: { chain_id: number; transacao: Record<string, string> } | null;
 };
 
 const ROUTES = [
@@ -52,6 +43,39 @@ const ROUTES = [
   { path: "missoes-ativas", key: "cio" },
   { path: "analise-risco", key: "cco" },
 ] as const;
+
+const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC || "https://solana-rpc.publicnode.com";
+const BAR_COLORS = ["#39ff6a", "#f2e27a", "#7ec8ff", "#ff8b7a", "#d7a6ff"];
+const BAND: Record<string, string> = {
+  alta: "ALTA",
+  moderada: "MODERADA",
+  contida: "CONTIDA",
+  vazia: "VAZIA",
+};
+
+type SolanaProvider = {
+  isPhantom?: boolean;
+  connect: () => Promise<{ publicKey: { toString: () => string } }>;
+  signTransaction: (tx: { serialize: () => Uint8Array }) => Promise<{ serialize: () => Uint8Array }>;
+};
+
+type EvmProvider = {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+};
+
+function phantomSolana(): SolanaProvider | null {
+  const win = window as unknown as {
+    phantom?: { solana?: SolanaProvider };
+    solana?: SolanaProvider;
+  };
+  if (win.phantom?.solana?.isPhantom) return win.phantom.solana;
+  return win.solana?.isPhantom ? win.solana : null;
+}
+
+function phantomEthereum(): EvmProvider | null {
+  const phantom = (window as unknown as { phantom?: { ethereum?: EvmProvider } }).phantom;
+  return phantom?.ethereum ?? null;
+}
 
 async function readJson(response: Response): Promise<unknown> {
   const text = await response.text();
@@ -63,37 +87,20 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-type SolanaProvider = {
-  isPhantom?: boolean;
-  connect: () => Promise<unknown>;
-  signTransaction: (tx: { serialize: () => Uint8Array }) => Promise<{ serialize: () => Uint8Array }>;
-};
-
-type EvmProvider = {
-  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-};
-
-function phantomSolana(): SolanaProvider | null {
-  const provider = (window as unknown as { solana?: SolanaProvider }).solana;
-  return provider?.isPhantom ? provider : null;
-}
-
-function phantomEthereum(): EvmProvider | null {
-  const phantom = (window as unknown as { phantom?: { ethereum?: EvmProvider } }).phantom;
-  return phantom?.ethereum ?? null;
+function chainMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return fallback;
 }
 
 export function Reino() {
   const [speeches, setSpeeches] = useState<Record<string, Speech | null>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
-  const [solanaKey, setSolanaKey] = useState("");
-  const [baseAddress, setBaseAddress] = useState("");
-  const [bundle, setBundle] = useState<Bundle | null>(null);
-  const [forgeError, setForgeError] = useState<string | null>(null);
-  const [forging, setForging] = useState(false);
-  const [signNote, setSignNote] = useState<string | null>(null);
-  const [signing, setSigning] = useState<"solana" | "base" | null>(null);
+  const [selected, setSelected] = useState<ActorId | null>(null);
+  const [shown, setShown] = useState("");
+  const [seal, setSeal] = useState<string | null>(null);
+  const [sealHref, setSealHref] = useState<string | null>(null);
+  const [sealing, setSealing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -128,267 +135,318 @@ export function Reino() {
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  async function forge() {
-    setForgeError(null);
-    setSignNote(null);
-    setForging(true);
-    try {
-      const response = await fetch("/api/backend/transacao-nao-assinada", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          pagador_solana: solanaKey.trim() || null,
-          pagador_base: baseAddress.trim() || null,
-        }),
-      });
-      const payload = await readJson(response);
-      if (!response.ok) {
-        setBundle(null);
-        setForgeError(errorMessage(payload, "Não foi possível empacotar as ordens."));
-        return;
-      }
-      setBundle(payload as Bundle);
-    } catch {
-      setForgeError("A API não recebeu o pedido da transação.");
-    } finally {
-      setForging(false);
-    }
-  }
+  const speech = selected ? speeches[selected] : null;
+  const speechError = selected ? errors[selected] : null;
+  const fullText = loading
+    ? "O arauto abre o pergaminho do conselho."
+    : speechError || speech?.fala || "Este lugar está em silêncio.";
 
-  async function signSolana() {
-    if (!bundle?.solana) return;
-    setSigning("solana");
-    setSignNote(null);
-    try {
-      const provider = phantomSolana();
-      if (!provider) {
-        setSignNote("A Phantom não está instalada neste navegador. A carga Solana continua aqui para você revisar.");
-        return;
-      }
-      const { Transaction } = await import("@solana/web3.js");
-      const bytes = Uint8Array.from(atob(bundle.solana.serialized_base64), (char) => char.charCodeAt(0));
-      await provider.connect();
-      const signed = await provider.signTransaction(Transaction.from(bytes));
-      const encoded = btoa(String.fromCharCode(...signed.serialize()));
-      setSignNote(`Phantom assinou a transação Solana (${encoded.length} caracteres). Nada foi enviado à rede.`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "A Phantom recusou a assinatura Solana.";
-      setSignNote(message);
-    } finally {
-      setSigning(null);
+  useEffect(() => {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      setShown(fullText);
+      return;
     }
-  }
+    setShown("");
+    let index = 0;
+    const timer = window.setInterval(() => {
+      index += 1;
+      setShown(fullText.slice(0, index));
+      if (index >= fullText.length) window.clearInterval(timer);
+    }, 16);
+    return () => window.clearInterval(timer);
+  }, [fullText, selected]);
 
-  async function signBase() {
-    if (!bundle?.base) return;
-    setSigning("base");
-    setSignNote(null);
-    try {
-      const provider = phantomEthereum();
-      if (!provider) {
-        setSignNote("A Phantom EVM não está neste navegador. A carga da Base continua aqui para você revisar.");
-        return;
-      }
-      const accounts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
-      const nonce = await provider.request({
-        method: "eth_getTransactionCount",
-        params: [accounts[0], "pending"],
-      });
-      const signed = await provider.request({
-        method: "eth_signTransaction",
-        params: [{ ...bundle.base.transacao, from: accounts[0], nonce }],
-      });
-      setSignNote(`Phantom devolveu a assinatura da Base. Nada foi enviado à rede. ${String(signed).slice(0, 18)}…`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "A Phantom recusou a assinatura na Base.";
-      setSignNote(message);
-    } finally {
-      setSigning(null);
-    }
-  }
-
-  const orders = speeches.cio?.dados.ordens ?? speeches.ceo?.dados.ordens ?? [];
+  const orders = speeches.cio?.dados.ordens ?? [];
+  const book = speeches.cio?.dados.carteira ?? [];
+  const concentration = speeches.cco?.dados.concentracao ?? speeches.cio?.dados.concentracao;
   const offline = !loading && ROUTES.every((route) => errors[route.key]);
+  const lines = [
+    speeches.ceo?.fala,
+    speeches.cio?.fala,
+    speeches.cco?.fala,
+  ].filter((line): line is string => Boolean(line));
+
+  async function forge(solanaKey: string | null, baseAddress: string | null, blockhash: string | null) {
+    const response = await fetch("/api/backend/transacao-nao-assinada", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pagador_solana: solanaKey,
+        pagador_base: baseAddress,
+        blockhash,
+      }),
+    });
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new Error(errorMessage(payload, "Não foi possível empacotar a missão."));
+    }
+    return payload as Bundle;
+  }
+
+  async function acceptMission() {
+    setSealing(true);
+    setSeal(null);
+    setSealHref(null);
+    try {
+      const solana = phantomSolana();
+      if (solana) {
+        const connected = await solana.connect();
+        const payer = connected.publicKey.toString();
+        const { Connection, Transaction } = await import("@solana/web3.js");
+        const connection = new Connection(SOLANA_RPC, "confirmed");
+        const latest = await connection.getLatestBlockhash("confirmed");
+        const bundle = await forge(payer, null, latest.blockhash);
+        if (!bundle.solana || bundle.move_tokens) {
+          throw new Error("A carga não é o selo esperado.");
+        }
+        const bytes = Uint8Array.from(atob(bundle.solana.serialized_base64), (char) => char.charCodeAt(0));
+        const signed = await solana.signTransaction(Transaction.from(bytes));
+        const signature = await connection.sendRawTransaction(signed.serialize(), {
+          skipPreflight: false,
+          maxRetries: 3,
+        });
+        setSeal("A rede recebeu o selo. Aguardando a confirmação.");
+        setSealHref(`https://solscan.io/tx/${signature}`);
+        try {
+          await connection.confirmTransaction(
+            {
+              signature,
+              blockhash: latest.blockhash,
+              lastValidBlockHeight: latest.lastValidBlockHeight,
+            },
+            "confirmed",
+          );
+          setSeal("Selo gravado na Solana. A crônica está na rede e o saldo dos ativos não se moveu.");
+        } catch {
+          setSeal("A Phantom assinou e a rede recebeu o selo. A confirmação ainda não voltou.");
+        }
+        return;
+      }
+
+      const evm = phantomEthereum();
+      if (evm) {
+        const accounts = (await evm.request({ method: "eth_requestAccounts" })) as string[];
+        const payer = accounts[0];
+        try {
+          await evm.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0x2105" }],
+          });
+        } catch (error) {
+          const code = (error as { code?: number }).code;
+          if (code === 4902) {
+            await evm.request({
+              method: "wallet_addEthereumChain",
+              params: [
+                {
+                  chainId: "0x2105",
+                  chainName: "Base",
+                  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+                  rpcUrls: ["https://mainnet.base.org"],
+                  blockExplorerUrls: ["https://basescan.org"],
+                },
+              ],
+            });
+          } else {
+            throw error;
+          }
+        }
+        const bundle = await forge(null, payer, null);
+        if (!bundle.base || bundle.move_tokens) {
+          throw new Error("A carga não é o selo esperado.");
+        }
+        const tx = Object.fromEntries(
+          Object.entries(bundle.base.transacao).filter(([key]) => key !== "nonce"),
+        );
+        const hash = (await evm.request({
+          method: "eth_sendTransaction",
+          params: [{ ...tx, from: payer }],
+        })) as string;
+        setSeal("Selo gravado na Base. A crônica está na rede e o saldo dos ativos não se moveu.");
+        setSealHref(`https://basescan.org/tx/${hash}`);
+        return;
+      }
+
+      setSeal("A Phantom não está neste navegador. O selo fica na mesa para revisão e não vai à rede.");
+    } catch (error) {
+      setSeal(chainMessage(error, "A Phantom recusou o selo da missão."));
+    } finally {
+      setSealing(false);
+    }
+  }
+
+  const maxWeight = Math.max(...book.map((item) => item.peso), 0.01);
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
-      <header className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-end sm:justify-between">
-        <div className="space-y-2">
-          <p className="text-xs tracking-[0.18em] text-primary uppercase">Neuro-Quest Capital</p>
-          <h1 className="font-display text-4xl leading-none italic sm:text-5xl">Conselho do reino</h1>
-          <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-            Três personagens leem a mesma carteira. A transação que segue empacota venda, compra, stop e pool
-            para a Phantom assinar. Ela não transfere tokens.
-          </p>
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-3 py-4 sm:px-5 sm:py-6">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-[10px] text-[#f2e27a]">NEURO-QUEST CAPITAL</p>
+          <h1 className="mt-2 text-sm text-[#f4f7ef] sm:text-base">SALA DO TRONO</h1>
         </div>
-        <Link href="/" className={buttonVariants({ variant: "outline" })}>
-          Voltar à mesa
+        <Link href="/" className="pixel-btn inline-flex items-center px-3 py-2 text-[10px] no-underline">
+          MESA
         </Link>
       </header>
 
       {offline ? (
-        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <div role="alert" className="pixel-panel flex flex-col gap-3 px-3 py-3 text-[10px] leading-relaxed sm:flex-row sm:items-center sm:justify-between">
           <p>O conselho não alcançou a API.</p>
-          <Button type="button" variant="outline" onClick={() => void load()}>
-            Tentar de novo
-          </Button>
+          <button type="button" className="pixel-btn px-3 py-2 text-[10px]" onClick={() => void load()}>
+            TENTAR DE NOVO
+          </button>
         </div>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        {ROUTES.map((route) => {
-          const speech = speeches[route.key];
-          const error = errors[route.key];
-          return (
-            <Card key={route.key} className="shadow-[4px_4px_0_0_var(--primary)]">
-              <CardHeader>
-                <CardDescription>{speech?.cargo ?? route.key.toUpperCase()}</CardDescription>
-                <CardTitle className="font-display text-2xl italic">
-                  {loading ? "Abrindo o pergaminho…" : speech?.agente ?? "Em silêncio"}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm leading-relaxed">
-                {loading ? <div className="h-24 animate-pulse rounded-lg bg-muted" /> : null}
-                {error ? (
-                  <p role="alert" className="text-destructive">
-                    {error}
-                  </p>
-                ) : null}
-                {speech ? (
-                  <>
-                    <p>{speech.fala}</p>
-                    <div className="flex flex-wrap gap-2">
-                      <Badge variant="outline">{speech.fonte === "gemini" ? "Gemini" : "Crônica local"}</Badge>
-                      <Badge variant="secondary">
-                        {speech.fonte_numeros === "motor" ? "Motor quantitativo" : "Contingência da mesa"}
-                      </Badge>
-                    </div>
-                    {speech.aviso ? <p className="text-muted-foreground">{speech.aviso}</p> : null}
-                  </>
-                ) : null}
-              </CardContent>
-            </Card>
-          );
-        })}
+      <div className="relative">
+        <div className="mb-3 lg:absolute lg:top-3 lg:left-3 lg:z-30 lg:mb-0 lg:w-56">
+          <section className="border-[3px] border-[#8ea0b8] bg-[#10141c] text-[#9dff7a] shadow-[4px_4px_0_#0c1018]" aria-label="Terminal do reino">
+            <header className="flex items-center justify-between border-b border-[#8ea0b8] bg-[#c5d0de] px-2 py-1 text-[8px] text-[#1a120e]">
+              <span>TERMINAL</span>
+              <span aria-hidden="true">□</span>
+            </header>
+            <div className="space-y-2 px-2 py-2 text-[8px] leading-relaxed" aria-live="polite">
+              {loading ? <p>Arauto: buscando o conselho...</p> : null}
+              {!loading && lines.length === 0 ? <p>Arauto: o pergaminho ainda está em branco.</p> : null}
+              {lines.slice(0, 3).map((line) => (
+                <p key={line.slice(0, 24)}>{line.length > 90 ? `${line.slice(0, 90)}...` : line}</p>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        <SalaDoTrono paused={selected !== null} selected={selected} onSelect={setSelected} />
+
+        <div className="mt-3 lg:absolute lg:bottom-3 lg:left-3 lg:z-30 lg:mt-0 lg:w-56">
+          <section className="border-[3px] border-[#8ea0b8] bg-[#10141c] text-[#9dff7a] shadow-[4px_4px_0_#0c1018]" aria-label="Tabuleiro do reino">
+            <header className="flex items-center justify-between border-b border-[#8ea0b8] bg-[#c5d0de] px-2 py-1 text-[8px] text-[#1a120e]">
+              <span>TABULEIRO DO REINO</span>
+              <span aria-hidden="true">□</span>
+            </header>
+            <div className="px-2 py-2">
+              <div className="flex h-10 items-end gap-1" aria-hidden="true">
+                {(book.length > 0 ? book : [{ simbolo: "—", peso: 0.2 }]).map((item, index) => (
+                  <div
+                    key={item.simbolo}
+                    className="w-full"
+                    style={{
+                      height: `${Math.max(8, (item.peso / maxWeight) * 100)}%`,
+                      background: BAR_COLORS[index % BAR_COLORS.length],
+                    }}
+                  />
+                ))}
+              </div>
+              <p className="mt-2 text-[8px] leading-relaxed">
+                {concentration?.band
+                  ? `FAIXA ${BAND[concentration.band] ?? concentration.band.toUpperCase()}`
+                  : "FAIXA —"}
+                {typeof concentration?.hhi === "number" ? ` · HHI ${concentration.hhi.toFixed(2)}` : ""}
+              </p>
+              <p className="text-[8px]">
+                LASTRO {loading ? "..." : usd.format(speeches.ceo?.dados.total_usd ?? 0)}
+              </p>
+            </div>
+          </section>
+        </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Ordens do pergaminho</CardTitle>
-          <CardDescription>
-            Quatro tipos na mesma carga: venda, compra, stop e pool. Os preços são os lançados na mesa.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {orders.length === 0 && !loading ? (
-            <p className="text-sm text-muted-foreground">
-              Nenhuma ordem enquanto a carteira estiver vazia. Lance uma posição na mesa para o conselho propor quests.
-            </p>
-          ) : (
-            <ul className="grid gap-2 sm:grid-cols-2">
-              {orders.map((order) => (
-                <li key={`${order.tipo}-${order.simbolo}-${order.simbolo_par}`} className="rounded-lg border border-border px-3 py-2 font-mono text-xs">
-                  <span className="text-primary">{order.tipo}</span> {order.simbolo}
-                  {order.simbolo_par ? `/${order.simbolo_par}` : ""} · {order.quantidade} @ {order.preco_usd}
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+      <div className="flex flex-wrap gap-2">
+        {ROUTES.map((route) => (
+          <button
+            key={route.key}
+            type="button"
+            className="pixel-btn px-3 py-2 text-[10px]"
+            aria-pressed={selected === route.key}
+            onClick={() => setSelected(route.key)}
+          >
+            {route.key === "ceo" ? "REGENTE" : route.key === "cio" ? "MISSÕES" : "FOSSO"}
+          </button>
+        ))}
+      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Transação não assinada</CardTitle>
-          <CardDescription>
-            Solana, pelo custo. Base, pela interoperabilidade EVM. As duas cabem na Phantom. O servidor não guarda chave
-            e não envia a transação.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label htmlFor="solana-key">Chave pública Solana</Label>
-              <Input
-                id="solana-key"
-                autoComplete="off"
-                spellCheck={false}
-                value={solanaKey}
-                onChange={(event) => setSolanaKey(event.target.value)}
-                placeholder="A chave pública da Phantom, não a semente"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="base-address">Endereço na Base</Label>
-              <Input
-                id="base-address"
-                autoComplete="off"
-                spellCheck={false}
-                value={baseAddress}
-                onChange={(event) => setBaseAddress(event.target.value)}
-                placeholder="0x…"
-              />
-            </div>
-          </div>
-          {forgeError ? (
-            <p role="alert" className="text-sm text-destructive">
-              {forgeError}
-            </p>
-          ) : null}
-          <Button type="button" onClick={() => void forge()} disabled={forging || loading || orders.length === 0}>
-            {forging ? "Forjando…" : "Forjar as duas cargas"}
-          </Button>
+      {selected ? (
+        <section className="pixel-panel relative px-3 pt-4 pb-3" aria-live="polite">
+          <button
+            type="button"
+            className="absolute top-1 right-2 text-[10px] text-[#b6ff8a]"
+            onClick={() => setSelected(null)}
+            aria-label="Fechar diálogo"
+          >
+            X
+          </button>
+          <p className="text-[10px] text-[#f2e27a]">{speech?.cargo ?? "CONSELHO"}</p>
+          <h2 className="mt-2 text-xs text-[#f4f7ef]">{speech?.agente ?? "Em silêncio"}</h2>
+          <p className="mt-3 max-h-40 overflow-y-auto text-[10px] leading-5 text-[#d8ffc4]">{shown}</p>
+          {speech?.aviso ? <p className="mt-2 text-[8px] text-[#f2e27a]">{speech.aviso}</p> : null}
 
-          {bundle ? (
-            <div className="grid gap-4 lg:grid-cols-2">
-              {bundle.solana ? (
-                <section className="space-y-3 rounded-lg border border-border p-3">
-                  <h2 className="font-display text-xl italic">Solana</h2>
-                  <p className="text-sm text-muted-foreground">
-                    {bundle.solana.instrucoes.length} instruções, {bundle.solana.tamanho_bytes} bytes.
-                    {bundle.solana.blockhash_provisorio
-                      ? " O blockhash é provisório: a assinatura não será transmitida."
-                      : ""}
-                  </p>
-                  <Button type="button" variant="outline" onClick={() => void signSolana()} disabled={signing !== null}>
-                    {signing === "solana" ? "Aguardando a Phantom…" : "Assinar na Phantom"}
-                  </Button>
-                </section>
-              ) : null}
-              {bundle.base ? (
-                <section className="space-y-3 rounded-lg border border-border p-3">
-                  <h2 className="font-display text-xl italic">Base</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Cadeia {bundle.base.chain_id}. Destino é o próprio endereço, valor zero. A carteira preenche o nonce.
-                  </p>
-                  <Button type="button" variant="outline" onClick={() => void signBase()} disabled={signing !== null}>
-                    {signing === "base" ? "Aguardando a Phantom…" : "Assinar na Phantom"}
-                  </Button>
-                  {bundle.base.chamadas_prontas.length > 0 ? (
-                    <details className="text-sm">
-                      <summary className="cursor-pointer text-muted-foreground">
-                        Chamadas do SwapRouter02 e do Position Manager, fora desta assinatura
-                      </summary>
-                      <ul className="mt-2 space-y-2">
-                        {bundle.base.chamadas_prontas.map((call) => (
-                          <li key={`${call.tipo}-${call.funcao}`} className="break-all font-mono text-xs">
-                            {call.tipo} · {call.contrato.slice(0, 10)}… · {call.data.slice(0, 18)}…
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
+          {selected === "cio" ? (
+            <div className="mt-4 border-t-2 border-[#1f5c32] pt-3">
+              <h3 className="text-[10px] text-[#f2e27a]">PORTFÓLIO PROPOSTO</h3>
+              {book.length === 0 ? (
+                <p className="mt-3 text-[10px] leading-5">
+                  Nenhuma posição para medir. Lance um ativo na mesa e o CIO desenha as barras.
+                </p>
+              ) : (
+                <div className="mt-3 flex h-28 items-end gap-2" aria-label="Barras do portfólio">
+                  {book.map((item, index) => (
+                    <div key={item.simbolo} className="flex h-full min-w-0 flex-1 flex-col justify-end gap-1">
+                      <div
+                        className="w-full"
+                        style={{
+                          height: `${Math.max(12, (item.peso / maxWeight) * 100)}%`,
+                          background: BAR_COLORS[index % BAR_COLORS.length],
+                          boxShadow: "2px 0 0 #06140c",
+                        }}
+                      />
+                      <span className="truncate text-center text-[8px]">{item.simbolo}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {orders.length > 0 ? (
+                <ul className="mt-3 grid gap-1 text-[8px] leading-4 sm:grid-cols-2">
+                  {orders.map((order) => (
+                    <li key={`${order.tipo}-${order.simbolo}-${order.simbolo_par}`}>
+                      {order.tipo.toUpperCase()} {order.simbolo}
+                      {order.simbolo_par ? `/${order.simbolo_par}` : ""} · {order.quantidade}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-3 text-[10px]">Sem ordens enquanto a carteira estiver vazia.</p>
+              )}
+              <p className="mt-3 text-[8px] leading-4 text-[#d8ffc4]">
+                Aceitar grava um selo na rede: memos na Solana, ou uma chamada a si mesmo na Base, com valor zero.
+                Não move saldo de ativo. A taxa da rede sai da sua carteira.
+              </p>
+              <button
+                type="button"
+                className="pixel-btn mt-3 w-full px-3 py-3 text-[10px] sm:w-auto"
+                disabled={sealing || loading || orders.length === 0}
+                onClick={() => void acceptMission()}
+              >
+                {sealing ? "GRAVANDO O SELO..." : "[ ACEITAR MISSÃO ]"}
+              </button>
+              {seal ? (
+                <p role="status" className="mt-3 text-[10px] leading-5">
+                  {seal}{" "}
+                  {sealHref ? (
+                    <a className="text-[#f2e27a] underline" href={sealHref} target="_blank" rel="noreferrer">
+                      Ver na rede
+                    </a>
                   ) : null}
-                </section>
+                </p>
               ) : null}
             </div>
           ) : null}
-          {signNote ? (
-            <p role="status" className="text-sm text-muted-foreground">
-              {signNote}
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
+        </section>
+      ) : (
+        <p className="text-[10px] leading-5 text-[#c5d0c0]">
+          Clique num conselheiro. O regente ocupa o trono, o mestre lê as missões, a vigia mede o fosso. Eles andam,
+          digitam e atendem o telefone entre uma fala e outra.
+        </p>
+      )}
     </div>
   );
 }

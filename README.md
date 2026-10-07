@@ -73,6 +73,10 @@ A mesa fica em [http://127.0.0.1:4181](http://127.0.0.1:4181).
 
 Contêineres rodam sem root, com `cap_drop: ALL`, `no-new-privileges` e sistema de arquivos raiz somente leitura. Logs do Docker giram em 10 MiB × 3 arquivos. `memswap_limit` igual ao teto de RAM impede que o motor estoure o limite via swap.
 
+## Sala do Trono
+
+`/reino` é a sala isométrica do conselho, em pixel, com a Press Start 2P e a Silkscreen para o português. Os três personagens andam entre as mesas, digitam e atendem o telefone. O clique abre o diálogo que vem de `status-reino`, `missoes-ativas` e `analise-risco`. O CIO mostra o peso da carteira em barras. `[ ACEITAR MISSÃO ]` pede a carga ao backend, a Phantom assina e a transação segue para a rede: memos na Solana, ou uma chamada de valor zero para o próprio endereço na Base. O saldo dos ativos não entra nessa transação. Sem a extensão, o selo fica na tela para revisão.
+
 ## Previsão diária
 
 O turno usa APScheduler dentro do motor, às 04:30 UTC, com uma instância por vez. Se a carga de 1 minuto passar de `QUANT_IDLE_LOAD_RATIO` (padrão 0,5) vezes o número de CPUs, o treino espera o próximo dia. O mesmo comando roda fora do processo, quando o operador quiser forçar:
