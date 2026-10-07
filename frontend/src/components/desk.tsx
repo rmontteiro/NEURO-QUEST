@@ -28,7 +28,7 @@ type FormState = {
 const EMPTY_FORM: FormState = {
   symbol: "",
   name: "",
-  chain: "ethereum",
+  chain: "",
   amount: "",
   price_usd: "",
 };
@@ -329,6 +329,7 @@ export function Desk() {
                     autoComplete="off"
                     maxLength={32}
                     required
+                    placeholder="ethereum"
                     value={form.chain}
                     onChange={(event) => setForm((current) => ({ ...current, chain: event.target.value }))}
                   />
