@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { SalaDoTrono } from "@/components/sala-do-trono";
+import { magiaFalhou, metodoAusente } from "@/lib/magia";
 import { errorMessage, usd } from "@/lib/types";
 import type { ActorId } from "@/lib/rotina";
 
@@ -10,6 +11,7 @@ type Order = {
   tipo: string;
   simbolo: string;
   simbolo_par: string | null;
+  rede?: string;
   quantidade: number;
   preco_usd: number;
 };
@@ -32,10 +34,35 @@ type Speech = {
   };
 };
 
-type Bundle = {
-  move_tokens: boolean;
-  solana: { serialized_base64: string } | null;
-  base: { chain_id: number; transacao: Record<string, string> } | null;
+type AuditItem = { rotulo: string; ok: boolean };
+
+type ChainCall = {
+  para: string;
+  data: string;
+  value: string;
+  descricao: string;
+};
+
+type LimitOrder = {
+  protocolo: string;
+  typed_data: {
+    domain: Record<string, unknown>;
+    types: Record<string, unknown>;
+    primaryType: string;
+    message: Record<string, unknown>;
+  };
+};
+
+type SolanaBatch = { serialized_base64: string };
+
+type MissionRoute = {
+  custodia: boolean;
+  enviar: boolean;
+  avisos: string[];
+  auditoria: { ok: boolean; itens: AuditItem[] };
+  chamadas: ChainCall[];
+  solana: SolanaBatch | null;
+  limite: LimitOrder | null;
 };
 
 const ROUTES = [
@@ -87,9 +114,41 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-function chainMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message.trim()) return error.message;
-  return fallback;
+function ListaDoVigia({
+  route,
+  loading,
+  error,
+}: {
+  route: MissionRoute | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  return (
+    <div>
+      <h3 className="text-[10px] text-[#f2e27a]">AUDITORIA DO VIGIA</h3>
+      {loading ? <p className="mt-3 text-[10px] leading-5">O Vigia mede o fosso antes da Phantom.</p> : null}
+      {error ? (
+        <p role="alert" className="mt-3 text-[10px] leading-5">
+          {error}
+        </p>
+      ) : null}
+      {!loading && !error && route ? (
+        <ul className="mt-3 space-y-2 text-[10px] leading-5" aria-label="Lista de validação">
+          {route.auditoria.itens.map((item) => (
+            <li key={item.rotulo}>{item.rotulo}</li>
+          ))}
+        </ul>
+      ) : null}
+      {!loading && !error && !route ? <p className="mt-3 text-[10px]">A auditoria ainda não voltou da mesa.</p> : null}
+      {route && route.avisos.length > 0 ? (
+        <ul className="mt-3 space-y-1 text-[8px] leading-4 text-[#f2e27a]">
+          {route.avisos.map((aviso) => (
+            <li key={aviso}>{aviso}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
 }
 
 export function Reino() {
@@ -101,6 +160,10 @@ export function Reino() {
   const [seal, setSeal] = useState<string | null>(null);
   const [sealHref, setSealHref] = useState<string | null>(null);
   const [sealing, setSealing] = useState(false);
+  const [spell, setSpell] = useState<string | null>(null);
+  const [route, setRoute] = useState<MissionRoute | null>(null);
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const [routeLoading, setRouteLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -128,12 +191,54 @@ export function Reino() {
     setLoading(false);
   }, []);
 
+  const askRoute = useCallback(async (solanaKey: string | null, ethereum: string | null, blockhash: string | null) => {
+    const response = await fetch("/api/backend/rota-missao", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pagador_solana: solanaKey,
+        pagador_ethereum: ethereum,
+        blockhash,
+      }),
+    });
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new Error(errorMessage(payload, "O Vigia não conseguiu auditar a rota."));
+    }
+    return payload as MissionRoute;
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void load();
     }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    let cancel = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setRouteLoading(true);
+        try {
+          const preview = await askRoute(null, null, null);
+          if (cancel) return;
+          setRoute(preview);
+          setRouteError(null);
+        } catch (error) {
+          if (cancel) return;
+          setRoute(null);
+          setRouteError(error instanceof Error ? error.message : "O Vigia não respondeu.");
+        } finally {
+          if (!cancel) setRouteLoading(false);
+        }
+      })();
+    }, 0);
+    return () => {
+      cancel = true;
+      window.clearTimeout(timer);
+    };
+  }, [askRoute]);
 
   const speech = selected ? speeches[selected] : null;
   const speechError = selected ? errors[selected] : null;
@@ -167,110 +272,166 @@ export function Reino() {
     speeches.cco?.fala,
   ].filter((line): line is string => Boolean(line));
 
-  async function forge(solanaKey: string | null, baseAddress: string | null, blockhash: string | null) {
-    const response = await fetch("/api/backend/transacao-nao-assinada", {
+  async function switchToEthereum(evm: EvmProvider) {
+    try {
+      await evm.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: "0x1" }],
+      });
+    } catch (error) {
+      const code = (error as { code?: number }).code;
+      if (code !== 4902) throw error;
+      await evm.request({
+        method: "wallet_addEthereumChain",
+        params: [
+          {
+            chainId: "0x1",
+            chainName: "Ethereum",
+            nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            rpcUrls: ["https://ethereum.publicnode.com"],
+            blockExplorerUrls: ["https://etherscan.io"],
+          },
+        ],
+      });
+    }
+  }
+
+  async function publishLimit(evm: EvmProvider, payer: string, limit: LimitOrder) {
+    const signature = (await evm.request({
+      method: "eth_signTypedData_v4",
+      params: [payer, JSON.stringify(limit.typed_data)],
+    })) as string;
+    const response = await fetch("/api/backend/rota-missao/publicar", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        pagador_solana: solanaKey,
-        pagador_base: baseAddress,
-        blockhash,
+        pagador: payer,
+        assinatura: signature,
+        ordem: limit.typed_data.message,
       }),
     });
     const payload = await readJson(response);
     if (!response.ok) {
-      throw new Error(errorMessage(payload, "Não foi possível empacotar a missão."));
+      throw new Error(errorMessage(payload, "A ordem limitada não entrou no livro."));
     }
-    return payload as Bundle;
+  }
+
+  async function sendEthereum(evm: EvmProvider, payer: string, calls: ChainCall[]) {
+    const batch = calls.map((call) => ({ to: call.para, data: call.data, value: call.value }));
+    try {
+      const id = await evm.request({
+        method: "wallet_sendCalls",
+        params: [{ version: "2.0.0", from: payer, chainId: "0x1", calls: batch }],
+      });
+      return typeof id === "string" ? id : null;
+    } catch (error) {
+      if (!metodoAusente(error)) throw error;
+    }
+    let last = "";
+    for (const call of calls) {
+      last = (await evm.request({
+        method: "eth_sendTransaction",
+        params: [{ from: payer, to: call.para, data: call.data, value: call.value }],
+      })) as string;
+    }
+    return last;
   }
 
   async function acceptMission() {
     setSealing(true);
     setSeal(null);
     setSealHref(null);
+    setSpell(null);
     try {
+      const evm = phantomEthereum();
       const solana = phantomSolana();
-      if (solana) {
+      if (!evm && !solana) {
+        setSeal("A Phantom não está neste navegador. A lista do Vigia fica na mesa e nenhuma transação sai.");
+        return;
+      }
+
+      let ethereum: string | null = null;
+      if (evm) {
+        const accounts = (await evm.request({ method: "eth_requestAccounts" })) as string[];
+        ethereum = accounts[0] ?? null;
+        if (ethereum) await switchToEthereum(evm);
+      }
+
+      let solanaKey: string | null = null;
+      let blockhash: string | null = null;
+      let connection: {
+        sendRawTransaction: (raw: Uint8Array, opts: { skipPreflight: boolean; maxRetries: number }) => Promise<string>;
+        confirmTransaction: (
+          args: { signature: string; blockhash: string; lastValidBlockHeight: number },
+          commitment: "confirmed",
+        ) => Promise<unknown>;
+      } | null = null;
+      let lastValidBlockHeight = 0;
+      const needsSolana = orders.some((order) => order.rede === "solana");
+      if (solana && needsSolana) {
         const connected = await solana.connect();
-        const payer = connected.publicKey.toString();
-        const { Connection, Transaction } = await import("@solana/web3.js");
-        const connection = new Connection(SOLANA_RPC, "confirmed");
-        const latest = await connection.getLatestBlockhash("confirmed");
-        const bundle = await forge(payer, null, latest.blockhash);
-        if (!bundle.solana || bundle.move_tokens) {
-          throw new Error("A carga não é o selo esperado.");
+        solanaKey = connected.publicKey.toString();
+        const { Connection } = await import("@solana/web3.js");
+        const live = new Connection(SOLANA_RPC, "confirmed");
+        const latest = await live.getLatestBlockhash("confirmed");
+        blockhash = latest.blockhash;
+        lastValidBlockHeight = latest.lastValidBlockHeight;
+        connection = live;
+      }
+
+      const fresh = await askRoute(solanaKey, ethereum, blockhash);
+      setRoute(fresh);
+      if ((fresh.chamadas.length > 0 || fresh.limite) && !ethereum) {
+        setSeal("Esta missão assina na Ethereum. Abre a Phantom nessa rede. Nada foi enviado.");
+        return;
+      }
+      if (fresh.solana && !solanaKey) {
+        setSeal("O swap da Jupiter pede a Phantom na Solana. Nada foi enviado.");
+        return;
+      }
+      if (!fresh.auditoria.ok || !fresh.enviar || fresh.custodia) {
+        throw new Error("A auditoria do Vigia não liberou o círculo.");
+      }
+
+      if (fresh.limite) {
+        if (!evm || !ethereum) {
+          setSeal("A ordem limitada pede a Phantom na Ethereum. Nada foi enviado.");
+          return;
         }
-        const bytes = Uint8Array.from(atob(bundle.solana.serialized_base64), (char) => char.charCodeAt(0));
-        const signed = await solana.signTransaction(Transaction.from(bytes));
+        await publishLimit(evm, ethereum, fresh.limite);
+      }
+
+      let href: string | null = null;
+      if (fresh.chamadas.length > 0 && evm && ethereum) {
+        const sent = await sendEthereum(evm, ethereum, fresh.chamadas);
+        if (sent && /^0x[0-9a-fA-F]{64}$/.test(sent)) href = `https://etherscan.io/tx/${sent}`;
+      }
+
+      if (fresh.solana && solana && connection && blockhash) {
+        const { VersionedTransaction } = await import("@solana/web3.js");
+        const bytes = Uint8Array.from(atob(fresh.solana.serialized_base64), (char) => char.charCodeAt(0));
+        const signed = await solana.signTransaction(VersionedTransaction.deserialize(bytes));
         const signature = await connection.sendRawTransaction(signed.serialize(), {
           skipPreflight: false,
           maxRetries: 3,
         });
-        setSeal("A rede recebeu o selo. Aguardando a confirmação.");
-        setSealHref(`https://solscan.io/tx/${signature}`);
+        href = `https://solscan.io/tx/${signature}`;
         try {
           await connection.confirmTransaction(
-            {
-              signature,
-              blockhash: latest.blockhash,
-              lastValidBlockHeight: latest.lastValidBlockHeight,
-            },
+            { signature, blockhash, lastValidBlockHeight },
             "confirmed",
           );
-          setSeal("Selo gravado na Solana. A crônica está na rede e o saldo dos ativos não se moveu.");
         } catch {
-          setSeal("A Phantom assinou e a rede recebeu o selo. A confirmação ainda não voltou.");
+          setSeal("A Phantom assinou o lote Solana. A confirmação ainda não voltou.");
+          setSealHref(href);
+          return;
         }
-        return;
       }
 
-      const evm = phantomEthereum();
-      if (evm) {
-        const accounts = (await evm.request({ method: "eth_requestAccounts" })) as string[];
-        const payer = accounts[0];
-        try {
-          await evm.request({
-            method: "wallet_switchEthereumChain",
-            params: [{ chainId: "0x2105" }],
-          });
-        } catch (error) {
-          const code = (error as { code?: number }).code;
-          if (code === 4902) {
-            await evm.request({
-              method: "wallet_addEthereumChain",
-              params: [
-                {
-                  chainId: "0x2105",
-                  chainName: "Base",
-                  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-                  rpcUrls: ["https://mainnet.base.org"],
-                  blockExplorerUrls: ["https://basescan.org"],
-                },
-              ],
-            });
-          } else {
-            throw error;
-          }
-        }
-        const bundle = await forge(null, payer, null);
-        if (!bundle.base || bundle.move_tokens) {
-          throw new Error("A carga não é o selo esperado.");
-        }
-        const tx = Object.fromEntries(
-          Object.entries(bundle.base.transacao).filter(([key]) => key !== "nonce"),
-        );
-        const hash = (await evm.request({
-          method: "eth_sendTransaction",
-          params: [{ ...tx, from: payer }],
-        })) as string;
-        setSeal("Selo gravado na Base. A crônica está na rede e o saldo dos ativos não se moveu.");
-        setSealHref(`https://basescan.org/tx/${hash}`);
-        return;
-      }
-
-      setSeal("A Phantom não está neste navegador. O selo fica na mesa para revisão e não vai à rede.");
+      setSeal("O círculo fechou. Tu assinaste o swap, o depósito no Aave e a permissão da ordem limitada. A agência não guarda a chave.");
+      setSealHref(href);
     } catch (error) {
-      setSeal(chainMessage(error, "A Phantom recusou o selo da missão."));
+      setSpell(magiaFalhou(error));
     } finally {
       setSealing(false);
     }
@@ -416,17 +577,21 @@ export function Reino() {
               ) : (
                 <p className="mt-3 text-[10px]">Sem ordens enquanto a carteira estiver vazia.</p>
               )}
+              <div className="mt-4">
+                <ListaDoVigia route={route} loading={routeLoading} error={routeError} />
+              </div>
               <p className="mt-3 text-[8px] leading-4 text-[#d8ffc4]">
-                Aceitar grava um selo na rede: memos na Solana, ou uma chamada a si mesmo na Base, com valor zero.
-                Não move saldo de ativo. A taxa da rede sai da sua carteira.
+                Aceitar move o que tu aprovares: swap na Uniswap, depósito no Aave V3 e a permissão exata da ordem
+                limitada. Na Solana, o swap da Jupiter entra na mesma Transaction V0 quando a cotação chega. A agência
+                não guarda a chave. A taxa da rede é tua.
               </p>
               <button
                 type="button"
                 className="pixel-btn mt-3 w-full px-3 py-3 text-[10px] sm:w-auto"
-                disabled={sealing || loading || orders.length === 0}
+                disabled={sealing || loading || routeLoading || orders.length === 0 || !route?.auditoria.ok}
                 onClick={() => void acceptMission()}
               >
-                {sealing ? "GRAVANDO O SELO..." : "[ ACEITAR MISSÃO ]"}
+                {sealing ? "PEDINDO O SELO..." : "[ ACEITAR MISSÃO ]"}
               </button>
               {seal ? (
                 <p role="status" className="mt-3 text-[10px] leading-5">
@@ -440,6 +605,16 @@ export function Reino() {
               ) : null}
             </div>
           ) : null}
+
+          {selected === "cco" ? (
+            <div className="mt-4 border-t-2 border-[#1f5c32] pt-3">
+              <ListaDoVigia route={route} loading={routeLoading} error={routeError} />
+              <p className="mt-3 text-[8px] leading-4 text-[#d8ffc4]">
+                O selo só segue para a Phantom com as três marcas. Slippage acima de 1%, contrato fora da lista ou
+                stop ausente deixa o botão quieto.
+              </p>
+            </div>
+          ) : null}
         </section>
       ) : (
         <p className="text-[10px] leading-5 text-[#c5d0c0]">
@@ -447,6 +622,22 @@ export function Reino() {
           digitam e atendem o telefone entre uma fala e outra.
         </p>
       )}
+
+      {spell ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-[#06140c]/80 p-4 sm:items-center">
+          <div role="alertdialog" aria-labelledby="magia-titulo" aria-describedby="magia-fala" className="pixel-panel w-full max-w-md px-4 py-4">
+            <p id="magia-titulo" className="text-[10px] text-[#f2e27a]">
+              O CÍRCULO QUEBROU
+            </p>
+            <p id="magia-fala" className="mt-3 text-[10px] leading-5">
+              {spell}
+            </p>
+            <button type="button" className="pixel-btn mt-4 px-3 py-2 text-[10px]" onClick={() => setSpell(null)}>
+              ENTENDIDO
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

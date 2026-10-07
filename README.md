@@ -65,17 +65,19 @@ A mesa fica em [http://127.0.0.1:4181](http://127.0.0.1:4181).
 
 - `backend` guarda as posições em SQLite e pede a leitura ao motor.
 - `ai-engine` calcula HHI, peso por rede e notas determinísticas. No mesmo processo, o turno das 04:30 UTC treina a previsão diária se a carga do host estiver ociosa. `OPENBLAS_NUM_THREADS=1` impede que a biblioteca numérica espalhe threads pelo host. `oom_score_adj: 400` faz o kernel preferir encerrar o motor se a VPS inteira ficar sem RAM. O motor não publica porta no host; a rede `egress` só existe para ele buscar a Binance e o FRED.
-- `frontend` é a mesa. O browser só fala com o Next.js; o Next.js fala com a API. Em `/reino`, o conselho lê a carteira e a tela forja uma transação não assinada para a Phantom, em Solana e na Base.
+- `frontend` é a mesa. O browser só fala com o Next.js; o Next.js fala com a API. Em `/reino`, o conselho lê a carteira e o Vigia audita o lote antes da Phantom.
 
 ## Conselho e transação
 
-`GET /status-reino`, `GET /missoes-ativas` e `GET /analise-risco` são assíncronas. `POST /transacao-nao-assinada` devolve as duas cargas. A que a Phantom assina não transfere tokens: na Solana são memos na mesma transação; na Base o destino é o próprio endereço, com valor zero. As chamadas do SwapRouter02 (`0x2626664c2603336E57B271c5C0b26F421741e481`) e do NonfungiblePositionManager (`0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1`) vêm codificadas à parte e não entram nessa assinatura.
+`GET /status-reino`, `GET /missoes-ativas` e `GET /analise-risco` são assíncronas. `POST /transacao-nao-assinada` continua devolvendo o selo antigo, que não transfere tokens: memos na Solana, ou uma chamada de valor zero para o próprio endereço na Base.
+
+`POST /rota-missao` monta o lote que move o que o investidor aprovar. O slippage fica em 1% (100 bps). Na Ethereum, compra e venda vão ao SwapRouter02 da Uniswap (`0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`), com `exactInputSingle` e approve do valor exato. O depósito de earn vai ao Pool do Aave V3 (`0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2`), com `supply` em nome do próprio investidor. O stop é uma ordem limitada do CoW Protocol: o usuário assina o EIP-712 e a API só então publica em `api.cow.fi`. A permissão do token vai ao VaultRelayer (`0xC92E8bdf79f0507f65a392b0ab4667716BFE0110`), no valor exato, e só entra no envio se a publicação for aceita. Na Solana, o swap da Jupiter v6 (`JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4`) e o limite de compute cabem na mesma Transaction V0. Programa ou contrato fora da lista interrompe o lote. Uma rede que não seja Ethereum ou Solana vira aviso e fica de fora. Sem a cotação da Jupiter, o swap Solana também fica de fora.
 
 Contêineres rodam sem root, com `cap_drop: ALL`, `no-new-privileges` e sistema de arquivos raiz somente leitura. Logs do Docker giram em 10 MiB × 3 arquivos. `memswap_limit` igual ao teto de RAM impede que o motor estoure o limite via swap.
 
 ## Sala do Trono
 
-`/reino` é a sala isométrica do conselho, em pixel, com a Press Start 2P e a Silkscreen para o português. Os três personagens andam entre as mesas, digitam e atendem o telefone. O clique abre o diálogo que vem de `status-reino`, `missoes-ativas` e `analise-risco`. O CIO mostra o peso da carteira em barras. `[ ACEITAR MISSÃO ]` pede a carga ao backend, a Phantom assina e a transação segue para a rede: memos na Solana, ou uma chamada de valor zero para o próprio endereço na Base. O saldo dos ativos não entra nessa transação. Sem a extensão, o selo fica na tela para revisão.
+`/reino` é a sala isométrica do conselho, em pixel, com a Press Start 2P e a Silkscreen para o português. Os três personagens andam entre as mesas, digitam e atendem o telefone. O clique abre o diálogo que vem de `status-reino`, `missoes-ativas` e `analise-risco`. O CIO mostra o peso da carteira em barras. Antes da Phantom, o Vigia lista três marcas: `Slippage max: 1%`, `Smart Contract Validated: Yes` e `Stop-Loss set: Yes`. `[ ACEITAR MISSÃO ]` só habilita com as três. A Phantom então assina o lote na Ethereum (e a Transaction V0 na Solana, quando ela existir). Sem a extensão, a lista fica na mesa e nada é enviado. Se a rede recusar, a caixa diz uma destas frases: “A magia falhou, aventureiro! O alforje não tem o ouro desta travessia.”, “A magia falhou, aventureiro! O preço escorregou além do limite de 1%.” ou “A magia falhou, aventureiro! Tu recusaste o selo no limiar da Phantom.”
 
 ## Previsão diária
 

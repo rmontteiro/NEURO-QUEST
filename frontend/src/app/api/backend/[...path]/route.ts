@@ -8,6 +8,7 @@ const ALLOWED = new Set([
   "missoes-ativas",
   "analise-risco",
   "transacao-nao-assinada",
+  "rota-missao",
   "previsoes",
 ]);
 

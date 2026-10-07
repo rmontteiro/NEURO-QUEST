@@ -6,8 +6,16 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+import httpx
+
 from app.agents import PERSONAS, narrate
 from app.council import BASE_TOKENS, SOLANA_MINTS, load_snapshot
+from app.router_defi import (
+    build_route,
+    classificar_falha,
+    ordem_limite,
+    validar_ordem_publicada,
+)
 from app.txbuild import build_bundle
 
 router = APIRouter()
@@ -21,6 +29,18 @@ class OrderIn(BaseModel):
     quantidade: float = Field(gt=0, le=1_000_000_000)
     preco_usd: float = Field(ge=0, le=100_000_000)
     gatilho_usd: float | None = Field(default=None, ge=0, le=100_000_000)
+
+
+class RouteIn(BaseModel):
+    pagador_solana: str | None = None
+    pagador_ethereum: str | None = None
+    blockhash: str | None = None
+
+
+class PublicarIn(BaseModel):
+    pagador: str = Field(min_length=42, max_length=42)
+    assinatura: str = Field(min_length=10, max_length=200)
+    ordem: dict[str, Any]
 
 
 class TxIn(BaseModel):
@@ -90,3 +110,44 @@ async def transacao_nao_assinada(body: TxIn) -> dict[str, Any]:
         return build_bundle(orders, body.pagador_solana, body.pagador_base, body.blockhash)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/rota-missao")
+async def rota_missao(body: RouteIn) -> dict[str, Any]:
+    snapshot = await load_snapshot()
+    try:
+        return build_route(
+            snapshot["ordens"],
+            pagador_solana=body.pagador_solana,
+            pagador_ethereum=body.pagador_ethereum,
+            blockhash=body.blockhash,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=classificar_falha(str(exc))) from exc
+
+
+@router.post("/rota-missao/publicar")
+async def publicar_limite(body: PublicarIn) -> dict[str, Any]:
+    snapshot = await load_snapshot()
+    stop = next((order for order in snapshot["ordens"] if order["tipo"] == "stop"), None)
+    if stop is None:
+        raise HTTPException(status_code=422, detail="A missão não tem ordem de stop.")
+    try:
+        expected = ordem_limite(stop, body.pagador)
+        validar_ordem_publicada(body.ordem, expected)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    payload = {
+        **body.ordem,
+        "signingScheme": "eip712",
+        "signature": body.assinatura,
+        "from": body.pagador,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post("https://api.cow.fi/mainnet/api/v1/orders", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=classificar_falha(str(exc))) from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=422, detail=classificar_falha(response.text))
+    return {"order_id": response.text.strip('"'), "protocolo": "CoW Protocol"}
