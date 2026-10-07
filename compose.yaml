@@ -1,0 +1,174 @@
+# Lastro — três serviços isolados para uma VPS compartilhada.
+# O Compose v2 lê este arquivo (o nome atual de docker-compose.yml).
+# Tetos padrão: motor 1.0 CPU / 1536 MiB, API 0.50 CPU / 384 MiB, mesa 0.50 CPU / 512 MiB.
+# Ajuste no .env depois de medir o host com `nproc` e `free -h`.
+# O deploy recusa a subida se a soma dos tetos passar de 70% da RAM ou 80% das vCPUs.
+
+name: lastro
+
+x-isolation: &isolation
+  restart: unless-stopped
+  init: true
+  read_only: true
+  pull_policy: never
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  ai-engine:
+    <<: *isolation
+    image: lastro-ai-engine:${LASTRO_TAG:-current}
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    stop_grace_period: 20s
+    # Se o host ficar sem memória, o kernel prefere encerrar o motor
+    # antes dos outros processos da VPS.
+    oom_score_adj: 400
+    environment:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      MALLOC_ARENA_MAX: "2"
+    tmpfs:
+      - /tmp:size=128m,mode=1777,uid=1001,gid=1001
+    networks:
+      - internal
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 40s
+    memswap_limit: ${AI_MEMORY_LIMIT:-1536M}
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 2048
+    deploy:
+      resources:
+        limits:
+          cpus: "${AI_CPU_LIMIT:-1.0}"
+          memory: ${AI_MEMORY_LIMIT:-1536M}
+          pids: ${AI_PIDS_LIMIT:-128}
+        reservations:
+          cpus: "${AI_CPU_RESERVATION:-0.25}"
+          memory: ${AI_MEMORY_RESERVATION:-384M}
+
+  backend:
+    <<: *isolation
+    image: lastro-backend:${LASTRO_TAG:-current}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    oom_score_adj: 100
+    environment:
+      DATA_PATH: /data/lastro.db
+      AI_ENGINE_URL: http://ai-engine:8000
+    volumes:
+      - carteira:/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777,uid=1001,gid=1001
+    ports:
+      - "127.0.0.1:${HOST_API_PORT:-8091}:8000"
+    networks:
+      - internal
+      - edge
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    memswap_limit: ${BACKEND_MEMORY_LIMIT:-384M}
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 2048
+    deploy:
+      resources:
+        limits:
+          cpus: "${BACKEND_CPU_LIMIT:-0.50}"
+          memory: ${BACKEND_MEMORY_LIMIT:-384M}
+          pids: ${BACKEND_PIDS_LIMIT:-64}
+        reservations:
+          cpus: "${BACKEND_CPU_RESERVATION:-0.10}"
+          memory: ${BACKEND_MEMORY_RESERVATION:-128M}
+
+  frontend:
+    <<: *isolation
+    image: lastro-frontend:${LASTRO_TAG:-current}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    oom_score_adj: 100
+    environment:
+      BACKEND_URL: http://backend:8000
+    tmpfs:
+      - /tmp:size=64m,mode=1777,uid=1001,gid=1001
+      - /app/.next/cache:size=32m,mode=755,uid=1001,gid=1001
+    ports:
+      - "127.0.0.1:${HOST_WEB_PORT:-4181}:3000"
+    networks:
+      - edge
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    memswap_limit: ${FRONTEND_MEMORY_LIMIT:-512M}
+    ulimits:
+      nofile:
+        soft: 2048
+        hard: 4096
+    deploy:
+      resources:
+        limits:
+          cpus: "${FRONTEND_CPU_LIMIT:-0.50}"
+          memory: ${FRONTEND_MEMORY_LIMIT:-512M}
+          pids: ${FRONTEND_PIDS_LIMIT:-256}
+        reservations:
+          cpus: "${FRONTEND_CPU_RESERVATION:-0.10}"
+          memory: ${FRONTEND_MEMORY_RESERVATION:-128M}
+
+networks:
+  # Sem rota para fora: o motor só fala com a API.
+  internal:
+    internal: true
+  edge:
+
+volumes:
+  carteira:
+    name: lastro_carteira

@@ -1,0 +1,16 @@
+[Unit]
+Description=Lastro — carteira Web3
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Ajuste para o diretório em que o repositório está na VPS.
+WorkingDirectory=/opt/lastro
+ExecStart=/usr/bin/docker compose -f compose.yaml up -d --no-build
+ExecStop=/usr/bin/docker compose -f compose.yaml stop
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
