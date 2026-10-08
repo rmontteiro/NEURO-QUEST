@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { magiaFalhou, metodoAusente } from "@/lib/magia";
+import { magiaFalhou } from "@/lib/magia";
 import { errorMessage, pct, usd } from "@/lib/types";
 
 type Order = {
@@ -42,6 +42,7 @@ type ChainCall = {
   data: string;
   value: string;
   descricao: string;
+  papel?: string;
 };
 
 type LimitOrder = {
@@ -113,8 +114,22 @@ function phantomSolana(): SolanaProvider | null {
 }
 
 function phantomEthereum(): EvmProvider | null {
-  const phantom = (window as unknown as { phantom?: { ethereum?: EvmProvider } }).phantom;
-  return phantom?.ethereum ?? null;
+  const win = window as unknown as {
+    phantom?: { ethereum?: EvmProvider & { isPhantom?: boolean } };
+    ethereum?: EvmProvider & { isPhantom?: boolean };
+  };
+  const daPhantom = win.phantom?.ethereum;
+  if (daPhantom?.isPhantom) return daPhantom;
+  return win.ethereum?.isPhantom ? win.ethereum : null;
+}
+
+function enderecoHttps(): string | null {
+  if (window.isSecureContext) return null;
+  const host = window.location.hostname;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return `https://${host}.nip.io${window.location.pathname}`;
+  }
+  return null;
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -181,6 +196,10 @@ export function Reino() {
   const [route, setRoute] = useState<MissionRoute | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeLoading, setRouteLoading] = useState(true);
+  const [seguro, setSeguro] = useState(false);
+  const [httpsHref, setHttpsHref] = useState<string | null>(null);
+  const [conta, setConta] = useState<string | null>(null);
+  const [etapa, setEtapa] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -233,12 +252,17 @@ export function Reino() {
   }, [load]);
 
   useEffect(() => {
+    setSeguro(window.isSecureContext);
+    setHttpsHref(enderecoHttps());
+  }, []);
+
+  useEffect(() => {
     let cancel = false;
     const timer = window.setTimeout(() => {
       void (async () => {
         setRouteLoading(true);
         try {
-          const preview = await askRoute(null, null, null);
+          const preview = await askRoute(null, conta, null);
           if (cancel) return;
           setRoute(preview);
           setRouteError(null);
@@ -255,7 +279,7 @@ export function Reino() {
       cancel = true;
       window.clearTimeout(timer);
     };
-  }, [askRoute]);
+  }, [askRoute, conta]);
 
   const orders = speeches.cio?.dados.ordens ?? [];
   const book = speeches.cio?.dados.carteira ?? [];
@@ -305,25 +329,28 @@ export function Reino() {
     }
   }
 
-  async function sendEthereum(evm: EvmProvider, payer: string, calls: ChainCall[]) {
-    const batch = calls.map((call) => ({ to: call.para, data: call.data, value: call.value }));
-    try {
-      const id = await evm.request({
-        method: "wallet_sendCalls",
-        params: [{ version: "2.0.0", from: payer, chainId: "0x1", calls: batch }],
-      });
-      return typeof id === "string" ? id : null;
-    } catch (error) {
-      if (!metodoAusente(error)) throw error;
+  async function conectarPhantom(): Promise<string> {
+    if (!window.isSecureContext) {
+      throw new Error("A Phantom só conecta numa página HTTPS.");
     }
-    let last = "";
-    for (const call of calls) {
-      last = (await evm.request({
-        method: "eth_sendTransaction",
-        params: [{ from: payer, to: call.para, data: call.data, value: call.value }],
-      })) as string;
+    const evm = phantomEthereum();
+    if (!evm) {
+      throw new Error("A Phantom não está neste navegador.");
     }
-    return last;
+    const accounts = (await evm.request({ method: "eth_requestAccounts" })) as string[];
+    const payer = accounts[0];
+    if (!payer) throw new Error("A Phantom não devolveu uma conta Ethereum.");
+    await switchToEthereum(evm);
+    setConta(payer);
+    return payer;
+  }
+
+  async function enviarChamada(evm: EvmProvider, payer: string, call: ChainCall): Promise<string> {
+    setEtapa(call.descricao);
+    return (await evm.request({
+      method: "eth_sendTransaction",
+      params: [{ from: payer, to: call.para, data: call.data, value: call.value }],
+    })) as string;
   }
 
   async function acceptMission() {
@@ -331,19 +358,23 @@ export function Reino() {
     setSeal(null);
     setSealHref(null);
     setSpell(null);
+    setEtapa(null);
+    const enviados: string[] = [];
     try {
+      if (!window.isSecureContext) {
+        setSeal("A Phantom não abre em HTTP. Use o endereço HTTPS indicado acima. Nada foi enviado.");
+        return;
+      }
       const evm = phantomEthereum();
       const solana = phantomSolana();
       if (!evm && !solana) {
-        setSeal("A Phantom não está neste navegador. A conferência fica registrada e nenhuma transação foi enviada.");
+        setSeal("A Phantom não está neste navegador. Instale a extensão e recarregue esta página. Nada foi enviado.");
         return;
       }
 
-      let ethereum: string | null = null;
+      let ethereum = conta;
       if (evm) {
-        const accounts = (await evm.request({ method: "eth_requestAccounts" })) as string[];
-        ethereum = accounts[0] ?? null;
-        if (ethereum) await switchToEthereum(evm);
+        ethereum = await conectarPhantom();
       }
 
       let solanaKey: string | null = null;
@@ -382,18 +413,29 @@ export function Reino() {
         throw new Error("A conferência de risco não liberou o envio.");
       }
 
-      if (fresh.limite) {
-        if (!evm || !ethereum) {
-          setSeal("A ordem limitada pede a Phantom na Ethereum. Nada foi enviado.");
-          return;
+      const movimentos = fresh.chamadas.filter((call) => call.papel !== "protecao");
+      const protecoes = fresh.chamadas.filter((call) => call.papel === "protecao");
+      let href: string | null = null;
+      if (movimentos.length > 0 && evm && ethereum) {
+        for (const call of movimentos) {
+          const sent = await enviarChamada(evm, ethereum, call);
+          enviados.push(call.descricao);
+          if (/^0x[0-9a-fA-F]{64}$/.test(sent)) href = `https://etherscan.io/tx/${sent}`;
         }
-        await publishLimit(evm, ethereum, fresh.limite);
       }
 
-      let href: string | null = null;
-      if (fresh.chamadas.length > 0 && evm && ethereum) {
-        const sent = await sendEthereum(evm, ethereum, fresh.chamadas);
-        if (sent && /^0x[0-9a-fA-F]{64}$/.test(sent)) href = `https://etherscan.io/tx/${sent}`;
+      if (fresh.limite) {
+        if (!evm || !ethereum) {
+          setSeal("A ordem limitada pede a Phantom na Ethereum. O restante já enviado permanece.");
+          return;
+        }
+        setEtapa("Assinando a ordem limitada");
+        await publishLimit(evm, ethereum, fresh.limite);
+        for (const call of protecoes) {
+          const sent = await enviarChamada(evm, ethereum, call);
+          enviados.push(call.descricao);
+          if (/^0x[0-9a-fA-F]{64}$/.test(sent)) href = `https://etherscan.io/tx/${sent}`;
+        }
       }
 
       if (fresh.solana && solana && connection && blockhash) {
@@ -417,11 +459,14 @@ export function Reino() {
         }
       }
 
-      setSeal("As propostas foram assinadas: swap, depósito no Aave e permissão da ordem limitada. A assessoria não guarda a chave.");
+      const feito = enviados.length > 0 ? ` Enviado: ${enviados.join("; ")}.` : "";
+      setSeal(`A Phantom assinou e a rede recebeu a movimentação.${feito} A assessoria não guarda a chave.`);
       setSealHref(href);
     } catch (error) {
-      setSpell(magiaFalhou(error));
+      const feito = enviados.length > 0 ? ` Já enviado antes da falha: ${enviados.join("; ")}. ` : "";
+      setSpell(`${feito}${magiaFalhou(error)}`);
     } finally {
+      setEtapa(null);
       setSealing(false);
     }
   }
@@ -539,19 +584,50 @@ export function Reino() {
         <CardHeader>
           <CardTitle>Antes de assinar</CardTitle>
           <CardDescription>
-            A assinatura envia o que você aprovar: swap na Uniswap, depósito no Aave V3 e a permissão exata da ordem
-            limitada. Na Solana, o swap da Jupiter entra na mesma transação quando a cotação chega. A taxa de rede é sua.
+            Conecte a Phantom. Ao assinar, a carteira envia o swap na Uniswap e o depósito no Aave V3, e em seguida a
+            permissão da ordem limitada. A taxa de rede é sua. A assessoria não guarda a chave.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
+          {!seguro && httpsHref ? (
+            <p className="text-sm leading-relaxed">
+              A Phantom não aparece numa página aberta em HTTP.{" "}
+              <a className="underline" href={httpsHref}>
+                Abrir esta assessoria em HTTPS
+              </a>
+              . O certificado é ativado na VPS com <span className="font-mono">./scripts/https.sh</span>.
+            </p>
+          ) : null}
           <Conferencia route={route} loading={routeLoading} error={routeError} />
+          {conta ? (
+            <p className="font-mono text-xs text-muted-foreground">Conta Ethereum {conta}</p>
+          ) : null}
+          {conta && route && route.chamadas.length > 0 ? (
+            <ol className="list-decimal space-y-1 pl-5 text-sm">
+              {route.chamadas.map((call) => (
+                <li key={`${call.papel}-${call.descricao}`}>{call.descricao}</li>
+              ))}
+            </ol>
+          ) : null}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <Button
               type="button"
-              disabled={sealing || loading || routeLoading || orders.length === 0 || !route?.auditoria.ok}
-              onClick={() => void acceptMission()}
+              disabled={
+                !seguro ||
+                sealing ||
+                (conta ? loading || routeLoading || orders.length === 0 || !route?.auditoria.ok : false)
+              }
+              onClick={() => {
+                if (!conta) {
+                  void conectarPhantom().catch((error: unknown) => {
+                    setSeal(error instanceof Error ? error.message : "A Phantom não conectou.");
+                  });
+                  return;
+                }
+                void acceptMission();
+              }}
             >
-              {sealing ? "Aguardando a carteira…" : "Assinar propostas"}
+              {sealing ? etapa || "Aguardando a Phantom…" : conta ? "Assinar e enviar" : "Conectar Phantom"}
             </Button>
             {!routeLoading && route && !route.auditoria.ok ? (
               <p className="text-sm text-muted-foreground">O envio fica bloqueado até a conferência fechar.</p>

@@ -27,6 +27,8 @@ cp .env.example .env
 
 A mesa escuta em `127.0.0.1:4181` e a API em `127.0.0.1:8091`. O motor não publica porta: ele fica numa rede Docker sem saída para a internet, e só a API fala com ele. Aponte o proxy que já existe na VPS para `127.0.0.1:4181`. Não abra essas portas no firewall.
 
+A Phantom só injeta a carteira em HTTPS. Com o Nginx já na frente da mesa, `sudo ./scripts/https.sh` pede um certificado para `<ipv4>.nip.io` e passa a servir `https://<ipv4>.nip.io`. O HTTP do IP redireciona para esse endereço.
+
 O arquivo de orquestração é `compose.yaml` (o nome atual do Compose v2).
 
 Depois do primeiro deploy, o systemd em `infra/lastro.service` sobe de novo os contêineres no boot. Ajuste `WorkingDirectory` para o diretório do clone antes de instalar a unit.

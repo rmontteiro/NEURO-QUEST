@@ -101,7 +101,15 @@ def _checksum(address: str) -> str:
     return Web3.to_checksum_address(address)
 
 
-def _call(to: str, signature: str, types: list[str], values: list[Any], value: int = 0, descricao: str = "") -> dict[str, Any]:
+def _call(
+    to: str,
+    signature: str,
+    types: list[str],
+    values: list[Any],
+    value: int = 0,
+    descricao: str = "",
+    papel: str = "movimento",
+) -> dict[str, Any]:
     target = _checksum(to)
     if target not in EVM_ALLOW:
         raise ValueError(f"Contrato fora da lista: {target}")
@@ -113,6 +121,7 @@ def _call(to: str, signature: str, types: list[str], values: list[Any], value: i
         "value": hex(value),
         "descricao": descricao,
         "chain_id": ETH_CHAIN_ID,
+        "papel": papel,
     }
 
 
@@ -122,7 +131,7 @@ def _decode_approve(data: str) -> tuple[str, int]:
     return _checksum(spender), int(amount)
 
 
-def chamada_approve(token: str, spender: str, amount: int, descricao: str) -> dict[str, Any]:
+def chamada_approve(token: str, spender: str, amount: int, descricao: str, papel: str = "movimento") -> dict[str, Any]:
     if amount <= 0 or amount >= 2**256 - 1:
         raise ValueError("O approve precisa ser o valor exato da missão.")
     spender_cs = _checksum(spender)
@@ -134,6 +143,7 @@ def chamada_approve(token: str, spender: str, amount: int, descricao: str) -> di
         ["address", "uint256"],
         [spender_cs, amount],
         descricao=descricao,
+        papel=papel,
     )
 
 
@@ -281,6 +291,7 @@ def ordem_limite(order: dict[str, Any], recipient: str) -> dict[str, Any]:
         COW_VAULT_RELAYER,
         sell_amount,
         f"Aprovar {symbol} exato no VaultRelayer para a ordem limitada",
+        papel="protecao",
     )
     return {
         "protocolo": "CoW Protocol",

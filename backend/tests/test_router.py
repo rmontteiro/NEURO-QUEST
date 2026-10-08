@@ -136,6 +136,10 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(params[5], expected_min)
         supply = next(call for call in route["chamadas"] if call["data"].startswith("0x617ba037"))
         self.assertEqual(supply["para"].lower(), AAVE_POOL.lower())
+        self.assertEqual(supply["papel"], "movimento")
+        protecao = [call for call in route["chamadas"] if call["papel"] == "protecao"]
+        self.assertEqual(len(protecao), 1)
+        self.assertIn("c92e8bdf79f0507f65a392b0ab4667716bfe0110", protecao[0]["data"].lower())
         for call in route["chamadas"]:
             if call["data"].startswith("0x095ea7b3"):
                 spender, amount = decode(["address", "uint256"], bytes.fromhex(call["data"][10:]))
