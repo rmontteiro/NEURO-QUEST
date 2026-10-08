@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { magiaFalhou } from "@/lib/magia";
+import { magiaFalhou, metodoAusente } from "@/lib/magia";
 import { errorMessage, pct, usd } from "@/lib/types";
 
 type Order = {
@@ -105,6 +105,7 @@ type SolanaProvider = {
   isPhantom?: boolean;
   connect: () => Promise<{ publicKey: { toString: () => string } }>;
   signTransaction: (tx: { serialize: () => Uint8Array }) => Promise<{ serialize: () => Uint8Array }>;
+  signAndSendTransaction?: (tx: { serialize: () => Uint8Array }) => Promise<{ signature?: string } | string>;
 };
 
 type EvmProvider = {
@@ -118,6 +119,37 @@ function phantomSolana(): SolanaProvider | null {
   };
   if (win.phantom?.solana?.isPhantom) return win.phantom.solana;
   return win.solana?.isPhantom ? win.solana : null;
+}
+
+function bytesFromBase64(value: string): Uint8Array {
+  const binary = atob(value.replace(/\s/g, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function assinaturaDe(sent: { signature?: string } | string): string {
+  if (typeof sent === "string" && sent) return sent;
+  if (typeof sent === "object" && sent.signature) return sent.signature;
+  throw new Error("A Phantom não devolveu a assinatura da Solana.");
+}
+
+async function enviarSwapSolana(
+  solana: SolanaProvider,
+  connection: {
+    sendRawTransaction: (raw: Uint8Array, opts: { skipPreflight: boolean; maxRetries: number }) => Promise<string>;
+  },
+  tx: { serialize: () => Uint8Array },
+): Promise<string> {
+  if (solana.signAndSendTransaction) {
+    try {
+      return assinaturaDe(await solana.signAndSendTransaction(tx));
+    } catch (error) {
+      if (!metodoAusente(error)) throw error;
+    }
+  }
+  const signed = await solana.signTransaction(tx);
+  return connection.sendRawTransaction(signed.serialize(), { skipPreflight: false, maxRetries: 3 });
 }
 
 function phantomEthereum(): EvmProvider | null {
@@ -468,12 +500,8 @@ export function Reino() {
         const { VersionedTransaction } = await import("@solana/web3.js");
         for (const lote of lotes) {
           setEtapa(lote.descricao || "Assinando o swap na Solana");
-          const bytes = Uint8Array.from(atob(lote.serialized_base64), (char) => char.charCodeAt(0));
-          const signed = await solana.signTransaction(VersionedTransaction.deserialize(bytes));
-          const signature = await connection.sendRawTransaction(signed.serialize(), {
-            skipPreflight: false,
-            maxRetries: 3,
-          });
+          const tx = VersionedTransaction.deserialize(bytesFromBase64(lote.serialized_base64));
+          const signature = await enviarSwapSolana(solana, connection, tx);
           href = `https://solscan.io/tx/${signature}`;
           enviados.push(lote.descricao || "Swap na Jupiter");
           if (lote.blockhash && lote.last_valid_block_height) {

@@ -25,17 +25,27 @@ function codigo(error: unknown): number | undefined {
   return typeof code === "number" ? code : undefined;
 }
 
+function detalhe(message: string): string {
+  const limpo = message.replace(/\s+/g, " ").trim();
+  if (!limpo || PRONTAS.has(limpo) || limpo.length > 220) return "";
+  return limpo;
+}
+
 export function magiaFalhou(error: unknown): string {
-  const message = texto(error);
+  const message = texto(error).split("\n").map((line) => line.trim()).find(Boolean) ?? "";
   if (PRONTAS.has(message)) return message;
   const blob = message.toLowerCase();
   const code = codigo(error);
   if (code === 4001 || /user rejected|rejected the request|recus|denied/.test(blob)) {
     return FALHA_RECUSA;
   }
-  if (/insufficient|lamport/.test(blob)) return FALHA_FUNDOS;
+  if (/insufficient|lamport|custom program error: 0x1/.test(blob)) return FALHA_FUNDOS;
   if (/slippage|0x1771|0x1781|amount out/.test(blob)) return FALHA_SLIPPAGE;
-  return FALHA_ROTA;
+  if (/blockhash|expired|block height exceeded/.test(blob)) {
+    return "A cotação da Jupiter expirou antes da assinatura. Tente de novo. Nada foi enviado.";
+  }
+  const extra = detalhe(message);
+  return extra ? `${FALHA_ROTA} ${extra}` : FALHA_ROTA;
 }
 
 export function metodoAusente(error: unknown): boolean {
