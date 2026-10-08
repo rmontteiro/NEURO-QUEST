@@ -13,6 +13,7 @@ from app.council import BASE_TOKENS, SOLANA_MINTS, load_snapshot
 from app.router_defi import (
     build_route,
     classificar_falha,
+    cotar_swaps_jupiter,
     ordem_limite,
     validar_ordem_publicada,
 )
@@ -115,15 +116,27 @@ async def transacao_nao_assinada(body: TxIn) -> dict[str, Any]:
 @router.post("/rota-missao")
 async def rota_missao(body: RouteIn) -> dict[str, Any]:
     snapshot = await load_snapshot()
+    lotes = None
+    avisos: list[str] = []
+    if body.pagador_solana:
+        try:
+            lotes, avisos = await cotar_swaps_jupiter(snapshot["ordens"], body.pagador_solana)
+        except ValueError as exc:
+            lotes = []
+            avisos = [str(exc)]
     try:
-        return build_route(
+        route = build_route(
             snapshot["ordens"],
             pagador_solana=body.pagador_solana,
             pagador_ethereum=body.pagador_ethereum,
             blockhash=body.blockhash,
+            lotes_solana=lotes,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=classificar_falha(str(exc))) from exc
+    if avisos:
+        route["avisos"] = [*avisos, *route["avisos"]]
+    return route
 
 
 @router.post("/rota-missao/publicar")

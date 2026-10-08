@@ -12,6 +12,7 @@ import base64
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
+import httpx
 from eth_abi import decode, encode
 from solders.compute_budget import set_compute_unit_limit
 from solders.hash import Hash
@@ -63,6 +64,12 @@ EVM_ALLOW = {
 SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_SOL = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOL_MINTS = {"SOL": SOL_MINT, "USDC": USDC_SOL}
+SOL_DECIMALS = {"SOL": 9, "USDC": 6}
+JUPITER_BASES = ("https://api.jup.ag/swap/v1", "https://lite-api.jup.ag/swap/v1")
+PROTECAO_SOLANA = (
+    "A proteção que espera a queda não foi armada. A ordem pública da Jupiter, "
+    "com limite abaixo do preço, venderia na hora. O stop que fica esperando entrega o saldo a um cofre."
+)
 
 FALHA_FUNDOS = "A transação não seguiu: saldo insuficiente para o valor e a taxa de rede."
 FALHA_SLIPPAGE = "A transação não seguiu: o preço saiu do limite de 1%."
@@ -352,10 +359,203 @@ def lote_jupiter(payer: str, blockhash: str, swap_data: bytes) -> dict[str, Any]
     packed = pack_v0(payer, instructions, blockhash)
     packed["protocolo"] = "Jupiter"
     packed["slippage_bps"] = SLIPPAGE_BPS
+    packed["descricao"] = "Swap na Jupiter"
     return packed
 
 
-def _auditar(chamadas: list[dict[str, Any]], solana: dict[str, Any] | None, limite: dict[str, Any] | None) -> dict[str, Any]:
+def conferir_lote_jupiter(raw: bytes, payer: str) -> dict[str, Any]:
+    """Aceita a V0 da Jupiter só se estiver sem assinatura, no pagador e na lista."""
+    if len(raw) > 1232:
+        raise ValueError("O lote Solana não cabe numa Transaction V0.")
+    try:
+        transaction = VersionedTransaction.from_bytes(raw)
+    except Exception as exc:
+        raise ValueError("A transação da Jupiter não pôde ser lida.") from exc
+    if not transaction.signatures or transaction.signatures[0] != Signature.default():
+        raise ValueError("A transação da Jupiter chegou assinada.")
+    message = transaction.message
+    if str(message.account_keys[0]) != payer:
+        raise ValueError("O pagador da transação não é a carteira conectada.")
+    programs = []
+    for instruction in message.instructions:
+        index = instruction.program_id_index
+        if index >= len(message.account_keys):
+            raise ValueError("A Jupiter escondeu um programa numa tabela de endereços.")
+        program = str(message.account_keys[index])
+        if program not in SOLANA_PROGRAMS:
+            raise ValueError(f"Programa Solana fora da lista: {program}")
+        programs.append({"programa": program, "nome": SOLANA_PROGRAMS[program]})
+    return {
+        "rede": "solana",
+        "versao": "v0",
+        "custodia": False,
+        "move_tokens": True,
+        "pagador": payer,
+        "programas": programs,
+        "serialized_base64": base64.b64encode(raw).decode("ascii"),
+        "tamanho_bytes": len(raw),
+        "protocolo": "Jupiter",
+        "slippage_bps": SLIPPAGE_BPS,
+        "blockhash": str(message.recent_blockhash),
+    }
+
+
+def _preco_sol(orders: list[dict[str, Any]]) -> Decimal | None:
+    for order in orders:
+        if str(order.get("simbolo", "")).upper() == "SOL" and float(order.get("preco_usd") or 0) > 1:
+            return Decimal(str(order["preco_usd"]))
+    return None
+
+
+def _par_jupiter(order: dict[str, Any], preco_sol: Decimal | None) -> tuple[str, str, int, str]:
+    kind = order["tipo"]
+    symbol = str(order["simbolo"]).upper()
+    pair = str(order.get("simbolo_par") or "USDC").upper()
+    quantidade = Decimal(str(order["quantidade"]))
+    if kind == "venda":
+        entrada, saida = symbol, pair
+        texto = f"Venda de {symbol} por {saida} na Jupiter"
+    elif kind == "compra":
+        entrada, saida = pair, symbol
+        texto = f"Compra de {symbol} com {entrada} na Jupiter"
+    else:
+        raise ValueError("Esta proposta não é um swap.")
+    if entrada not in SOL_MINTS or saida not in SOL_MINTS:
+        raise ValueError(f"{entrada}/{saida} não tem par cotado na Jupiter.")
+    if kind == "compra" and symbol == "USDC" and entrada == "SOL":
+        if preco_sol is None or preco_sol <= 0:
+            raise ValueError("Sem preço do SOL para calcular a compra de USDC.")
+        amount = _units(quantidade / preco_sol, SOL_DECIMALS["SOL"])
+    else:
+        amount = _units(quantidade, SOL_DECIMALS[entrada])
+    if amount <= 0:
+        raise ValueError("A quantidade do swap Solana ficou zerada.")
+    return SOL_MINTS[entrada], SOL_MINTS[saida], amount, texto
+
+
+async def _jup_json(client: httpx.AsyncClient, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    for base in JUPITER_BASES:
+        try:
+            response = await client.request(method, f"{base}{path}", **kwargs)
+        except httpx.HTTPError:
+            continue
+        if response.status_code == 200:
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload
+        if response.status_code == 400:
+            try:
+                detail = response.json().get("error")
+            except ValueError:
+                detail = None
+            if isinstance(detail, str) and detail:
+                raise ValueError("A Jupiter recusou este lote.")
+    raise ValueError("A cotação da Jupiter não chegou.")
+
+
+async def _um_swap_jupiter(
+    client: httpx.AsyncClient,
+    order: dict[str, Any],
+    payer: str,
+    preco_sol: Decimal | None,
+) -> dict[str, Any]:
+    entrada, saida, amount, texto = _par_jupiter(order, preco_sol)
+    quote = await _jup_json(
+        client,
+        "GET",
+        "/quote",
+        params={
+            "inputMint": entrada,
+            "outputMint": saida,
+            "amount": str(amount),
+            "slippageBps": str(SLIPPAGE_BPS),
+        },
+    )
+    if int(quote.get("slippageBps") or 10_000) > SLIPPAGE_BPS:
+        raise ValueError("A Jupiter devolveu slippage acima de 1%. O swap ficou de fora.")
+    if str(quote.get("inAmount")) != str(amount):
+        raise ValueError("A quantidade cotada não confere com a proposta.")
+    if quote.get("inputMint") != entrada or quote.get("outputMint") != saida:
+        raise ValueError("O par cotado não confere com a proposta.")
+    built = await _jup_json(
+        client,
+        "POST",
+        "/swap",
+        json={
+            "quoteResponse": quote,
+            "userPublicKey": payer,
+            "wrapAndUnwrapSol": True,
+            "dynamicComputeUnitLimit": True,
+        },
+    )
+    encoded = built.get("swapTransaction")
+    if not isinstance(encoded, str) or not encoded:
+        raise ValueError("A Jupiter não devolveu a transação do swap.")
+    lote = conferir_lote_jupiter(base64.b64decode(encoded), payer)
+    lote["descricao"] = texto
+    altura = built.get("lastValidBlockHeight")
+    if isinstance(altura, int):
+        lote["last_valid_block_height"] = altura
+    return lote
+
+
+async def cotar_swaps_jupiter(
+    orders: list[dict[str, Any]], payer: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Cota cada swap Solana e devolve as V0 já conferidas."""
+    try:
+        Pubkey.from_string(payer)
+    except Exception as exc:
+        raise ValueError("A chave Solana da Phantom não é válida.") from exc
+    swaps = [
+        order
+        for order in orders
+        if order.get("tipo") in {"compra", "venda"} and str(order.get("rede", "")).lower() == "solana"
+    ]
+    if not swaps:
+        return [], []
+    preco = _preco_sol(orders)
+    lotes: list[dict[str, Any]] = []
+    avisos: list[str] = []
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for order in swaps:
+            try:
+                lotes.append(await _um_swap_jupiter(client, order, payer, preco))
+            except ValueError as exc:
+                avisos.append(str(exc))
+    return lotes, avisos
+
+
+def _juntar_lotes(lotes: list[dict[str, Any]]) -> dict[str, Any]:
+    programas = []
+    for lote in lotes:
+        if int(lote.get("slippage_bps", SLIPPAGE_BPS + 1)) > SLIPPAGE_BPS:
+            raise ValueError("O slippage do lote Solana passa de 1%.")
+        for program in lote.get("programas", []):
+            if program["programa"] not in SOLANA_PROGRAMS:
+                raise ValueError(f"Programa Solana fora da lista: {program['programa']}")
+            programas.append(program)
+    return {
+        "rede": "solana",
+        "versao": "v0",
+        "custodia": False,
+        "move_tokens": True,
+        "protocolo": "Jupiter",
+        "slippage_bps": SLIPPAGE_BPS,
+        "programas": programas,
+        "lotes": lotes,
+        "serialized_base64": lotes[0]["serialized_base64"],
+        "pagador": lotes[0].get("pagador"),
+    }
+
+
+def _auditar(
+    chamadas: list[dict[str, Any]],
+    solana: dict[str, Any] | None,
+    limite: dict[str, Any] | None,
+    *,
+    exige_protecao: bool = True,
+) -> dict[str, Any]:
     contracts_ok = True
     motivos: list[str] = []
     for call in chamadas:
@@ -373,11 +573,18 @@ def _auditar(chamadas: list[dict[str, Any]], solana: dict[str, Any] | None, limi
             if program["programa"] not in SOLANA_PROGRAMS:
                 contracts_ok = False
                 motivos.append(f"Programa fora da lista: {program['programa']}")
-    stop_ok = limite is not None and int(limite["slippage_bps"]) <= SLIPPAGE_BPS
+    limite_ok = limite is not None and int(limite["slippage_bps"]) <= SLIPPAGE_BPS
+    stop_ok = limite_ok if exige_protecao else True
     slippage_ok = SLIPPAGE_BPS == 100 and (solana is None or int(solana.get("slippage_bps", 100)) <= 100)
     if limite is not None and int(limite["slippage_bps"]) > SLIPPAGE_BPS:
         slippage_ok = False
-    ok = contracts_ok and slippage_ok and stop_ok and (chamadas or solana or limite)
+    if limite_ok:
+        protecao = {"rotulo": "Proteção definida: sim", "ok": True}
+    elif not exige_protecao:
+        protecao = {"rotulo": "Proteção de queda: fora deste lote", "ok": False}
+    else:
+        protecao = {"rotulo": "Proteção definida: não", "ok": False}
+    ok = contracts_ok and slippage_ok and stop_ok and bool(chamadas or solana or limite)
     return {
         "ok": bool(ok),
         "slippage_max_bps": SLIPPAGE_BPS,
@@ -387,7 +594,7 @@ def _auditar(chamadas: list[dict[str, Any]], solana: dict[str, Any] | None, limi
                 "rotulo": "Contratos conferidos: sim" if contracts_ok else "Contratos conferidos: não",
                 "ok": contracts_ok,
             },
-            {"rotulo": "Proteção definida: sim" if stop_ok else "Proteção definida: não", "ok": stop_ok},
+            protecao,
         ],
         "motivos": motivos,
     }
@@ -400,26 +607,33 @@ def build_route(
     pagador_ethereum: str | None = None,
     blockhash: str | None = None,
     solana_swap: bytes | None = None,
+    lotes_solana: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Monta o lote. Sem pagador Ethereum, devolve só a auditoria prévia."""
+    """Monta o lote. Sem pagador, devolve só a conferência prévia.
+
+    A cotação ao vivo da Jupiter traz o próprio blockhash. O argumento
+    `blockhash` só entra quando o teste injeta os bytes do swap.
+    """
     avisos: list[str] = []
     chamadas: list[dict[str, Any]] = []
     limite = None
-    solana = None
+    viu_swap_solana = False
+    viu_stop_solana = False
     recipient = pagador_ethereum or ZERO
     for order in orders:
         kind = order["tipo"]
         chain = str(order.get("rede", "")).lower()
         try:
             if kind in {"compra", "venda"} and chain == "solana":
-                if pagador_solana and blockhash and solana_swap is not None:
-                    solana = lote_jupiter(pagador_solana, blockhash, solana_swap)
-                elif chain == "solana":
-                    avisos.append("A cotação da Jupiter não chegou. O swap Solana ficou de fora deste lote.")
+                viu_swap_solana = True
             elif kind in {"compra", "venda"} and chain in {"ethereum", "eth"}:
                 chamadas.extend(chamada_uniswap(order, recipient))
+            elif kind == "pool" and chain == "solana":
+                avisos.append(f"{order.get('simbolo')} não entra no Aave V3 da Ethereum.")
             elif kind == "pool":
                 chamadas.extend(chamadas_aave(order, recipient))
+            elif kind == "stop" and chain == "solana":
+                viu_stop_solana = True
             elif kind == "stop":
                 limite = ordem_limite(order, recipient)
             elif kind in {"compra", "venda", "pool", "stop"}:
@@ -430,7 +644,22 @@ def build_route(
             avisos.append(str(exc))
     if limite is not None:
         chamadas.append(limite["approve"])
-    auditoria = _auditar(chamadas, solana, limite)
+    if viu_stop_solana:
+        avisos.append(PROTECAO_SOLANA)
+    solana = None
+    if viu_swap_solana and solana_swap is not None and pagador_solana and blockhash and lotes_solana is None:
+        solana = _juntar_lotes([lote_jupiter(pagador_solana, blockhash, solana_swap)])
+    elif lotes_solana:
+        solana = _juntar_lotes(lotes_solana)
+    elif viu_swap_solana and lotes_solana is None:
+        avisos.append("Conecte a Phantom na Solana para a Jupiter cotar o swap.")
+    elif viu_swap_solana and pagador_solana and not lotes_solana:
+        avisos.append("A cotação da Jupiter não chegou. O swap Solana ficou de fora deste lote.")
+    exige_protecao = any(
+        order.get("tipo") == "stop" and str(order.get("rede", "")).lower() in {"ethereum", "eth"}
+        for order in orders
+    )
+    auditoria = _auditar(chamadas, solana, limite, exige_protecao=exige_protecao)
     return {
         "custodia": False,
         "enviar": bool(pagador_ethereum or pagador_solana),

@@ -55,7 +55,14 @@ type LimitOrder = {
   };
 };
 
-type SolanaBatch = { serialized_base64: string };
+type SolanaLote = {
+  serialized_base64: string;
+  blockhash?: string;
+  last_valid_block_height?: number;
+  descricao?: string;
+};
+
+type SolanaBatch = { serialized_base64: string; lotes?: SolanaLote[] };
 
 type MissionRoute = {
   custodia: boolean;
@@ -176,8 +183,8 @@ function Conferencia({
       </ul>
       {route.avisos.length > 0 ? (
         <ul className="space-y-1 text-sm text-muted-foreground">
-          {route.avisos.map((aviso) => (
-            <li key={aviso}>{aviso}</li>
+          {route.avisos.map((aviso, index) => (
+            <li key={`${index}-${aviso}`}>{aviso}</li>
           ))}
         </ul>
       ) : null}
@@ -199,6 +206,7 @@ export function Reino() {
   const [seguro, setSeguro] = useState(false);
   const [httpsHref, setHttpsHref] = useState<string | null>(null);
   const [conta, setConta] = useState<string | null>(null);
+  const [contaSolana, setContaSolana] = useState<string | null>(null);
   const [etapa, setEtapa] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -262,7 +270,7 @@ export function Reino() {
       void (async () => {
         setRouteLoading(true);
         try {
-          const preview = await askRoute(null, conta, null);
+          const preview = await askRoute(contaSolana, conta, null);
           if (cancel) return;
           setRoute(preview);
           setRouteError(null);
@@ -279,7 +287,7 @@ export function Reino() {
       cancel = true;
       window.clearTimeout(timer);
     };
-  }, [askRoute, conta]);
+  }, [askRoute, conta, contaSolana]);
 
   const orders = speeches.cio?.dados.ordens ?? [];
   const book = speeches.cio?.dados.carteira ?? [];
@@ -329,6 +337,20 @@ export function Reino() {
     }
   }
 
+  async function conectarSolana(): Promise<string> {
+    if (!window.isSecureContext) {
+      throw new Error("A Phantom só conecta numa página HTTPS.");
+    }
+    const solana = phantomSolana();
+    if (!solana) {
+      throw new Error("A Phantom não está neste navegador.");
+    }
+    const connected = await solana.connect();
+    const key = connected.publicKey.toString();
+    setContaSolana(key);
+    return key;
+  }
+
   async function conectarPhantom(): Promise<string> {
     if (!window.isSecureContext) {
       throw new Error("A Phantom só conecta numa página HTTPS.");
@@ -371,14 +393,19 @@ export function Reino() {
         setSeal("A Phantom não está neste navegador. Instale a extensão e recarregue esta página. Nada foi enviado.");
         return;
       }
+      const needsSolana = orders.some((order) => order.rede === "solana");
+      const needsEthereum = orders.some((order) => order.rede === "ethereum" || order.rede === "eth");
+      if (needsSolana && !solana) {
+        setSeal("O swap da Jupiter pede a Phantom na Solana. Nada foi enviado.");
+        return;
+      }
 
       let ethereum = conta;
-      if (evm) {
+      if (evm && needsEthereum) {
         ethereum = await conectarPhantom();
       }
 
-      let solanaKey: string | null = null;
-      let blockhash: string | null = null;
+      let solanaKey: string | null = contaSolana;
       let connection: {
         sendRawTransaction: (raw: Uint8Array, opts: { skipPreflight: boolean; maxRetries: number }) => Promise<string>;
         confirmTransaction: (
@@ -386,20 +413,13 @@ export function Reino() {
           commitment: "confirmed",
         ) => Promise<unknown>;
       } | null = null;
-      let lastValidBlockHeight = 0;
-      const needsSolana = orders.some((order) => order.rede === "solana");
       if (solana && needsSolana) {
-        const connected = await solana.connect();
-        solanaKey = connected.publicKey.toString();
+        solanaKey = await conectarSolana();
         const { Connection } = await import("@solana/web3.js");
-        const live = new Connection(SOLANA_RPC, "confirmed");
-        const latest = await live.getLatestBlockhash("confirmed");
-        blockhash = latest.blockhash;
-        lastValidBlockHeight = latest.lastValidBlockHeight;
-        connection = live;
+        connection = new Connection(SOLANA_RPC, "confirmed");
       }
 
-      const fresh = await askRoute(solanaKey, ethereum, blockhash);
+      const fresh = await askRoute(solanaKey, ethereum, null);
       setRoute(fresh);
       if ((fresh.chamadas.length > 0 || fresh.limite) && !ethereum) {
         setSeal("Estas propostas assinam na Ethereum. Abra a Phantom nessa rede. Nada foi enviado.");
@@ -438,24 +458,36 @@ export function Reino() {
         }
       }
 
-      if (fresh.solana && solana && connection && blockhash) {
+      const lotes: SolanaLote[] =
+        fresh.solana?.lotes && fresh.solana.lotes.length > 0
+          ? fresh.solana.lotes
+          : fresh.solana
+            ? [{ serialized_base64: fresh.solana.serialized_base64 }]
+            : [];
+      if (lotes.length > 0 && solana && connection) {
         const { VersionedTransaction } = await import("@solana/web3.js");
-        const bytes = Uint8Array.from(atob(fresh.solana.serialized_base64), (char) => char.charCodeAt(0));
-        const signed = await solana.signTransaction(VersionedTransaction.deserialize(bytes));
-        const signature = await connection.sendRawTransaction(signed.serialize(), {
-          skipPreflight: false,
-          maxRetries: 3,
-        });
-        href = `https://solscan.io/tx/${signature}`;
-        try {
-          await connection.confirmTransaction(
-            { signature, blockhash, lastValidBlockHeight },
-            "confirmed",
-          );
-        } catch {
-          setSeal("A Phantom assinou o lote na Solana. A confirmação da rede ainda não voltou.");
-          setSealHref(href);
-          return;
+        for (const lote of lotes) {
+          setEtapa(lote.descricao || "Assinando o swap na Solana");
+          const bytes = Uint8Array.from(atob(lote.serialized_base64), (char) => char.charCodeAt(0));
+          const signed = await solana.signTransaction(VersionedTransaction.deserialize(bytes));
+          const signature = await connection.sendRawTransaction(signed.serialize(), {
+            skipPreflight: false,
+            maxRetries: 3,
+          });
+          href = `https://solscan.io/tx/${signature}`;
+          enviados.push(lote.descricao || "Swap na Jupiter");
+          if (lote.blockhash && lote.last_valid_block_height) {
+            try {
+              await connection.confirmTransaction(
+                { signature, blockhash: lote.blockhash, lastValidBlockHeight: lote.last_valid_block_height },
+                "confirmed",
+              );
+            } catch {
+              setSeal("A Phantom assinou o lote na Solana. A confirmação da rede ainda não voltou.");
+              setSealHref(href);
+              return;
+            }
+          }
         }
       }
 
@@ -472,6 +504,11 @@ export function Reino() {
   }
 
   const total = speeches.ceo?.dados.total_usd ?? speeches.cio?.dados.total_usd ?? 0;
+  const precisaSolana = orders.some((order) => order.rede === "solana");
+  const precisaEthereum = orders.some((order) => order.rede === "ethereum" || order.rede === "eth");
+  const solanaPronta = !precisaSolana || Boolean(contaSolana);
+  const ethereumPronta = !precisaEthereum || Boolean(conta);
+  const carteiraPronta = solanaPronta && ethereumPronta;
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
@@ -584,8 +621,11 @@ export function Reino() {
         <CardHeader>
           <CardTitle>Antes de assinar</CardTitle>
           <CardDescription>
-            Conecte a Phantom. Ao assinar, a carteira envia o swap na Uniswap e o depósito no Aave V3, e em seguida a
-            permissão da ordem limitada. A taxa de rede é sua. A assessoria não guarda a chave.
+            {precisaSolana && !precisaEthereum
+              ? "Conecte a Phantom na Solana. Ao assinar, a carteira envia o swap na Jupiter. A taxa de rede é sua. A assessoria não guarda a chave."
+              : precisaSolana
+                ? "Conecte a Phantom na rede de cada proposta. Na Solana, a assinatura envia o swap na Jupiter. Na Ethereum, envia o que a conferência tiver montado. A taxa de rede é sua."
+                : "Conecte a Phantom. Ao assinar, a carteira envia o swap na Uniswap e o depósito no Aave V3, e em seguida a permissão da ordem limitada. A taxa de rede é sua. A assessoria não guarda a chave."}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -599,8 +639,18 @@ export function Reino() {
             </p>
           ) : null}
           <Conferencia route={route} loading={routeLoading} error={routeError} />
+          {contaSolana ? (
+            <p className="font-mono text-xs text-muted-foreground">Conta Solana {contaSolana}</p>
+          ) : null}
           {conta ? (
             <p className="font-mono text-xs text-muted-foreground">Conta Ethereum {conta}</p>
+          ) : null}
+          {contaSolana && route?.solana?.lotes && route.solana.lotes.length > 0 ? (
+            <ol className="list-decimal space-y-1 pl-5 text-sm">
+              {route.solana.lotes.map((lote) => (
+                <li key={lote.descricao || lote.serialized_base64}>{lote.descricao || "Swap na Jupiter"}</li>
+              ))}
+            </ol>
           ) : null}
           {conta && route && route.chamadas.length > 0 ? (
             <ol className="list-decimal space-y-1 pl-5 text-sm">
@@ -615,21 +665,32 @@ export function Reino() {
               disabled={
                 !seguro ||
                 sealing ||
-                (conta ? loading || routeLoading || orders.length === 0 || !route?.auditoria.ok : false)
+                (carteiraPronta ? loading || routeLoading || orders.length === 0 || !route?.auditoria.ok : false)
               }
               onClick={() => {
-                if (!conta) {
-                  void conectarPhantom().catch((error: unknown) => {
-                    setSeal(error instanceof Error ? error.message : "A Phantom não conectou.");
-                  });
+                const falha = (error: unknown) => {
+                  setSeal(error instanceof Error ? error.message : "A Phantom não conectou.");
+                };
+                if (precisaSolana && !contaSolana) {
+                  void conectarSolana().catch(falha);
+                  return;
+                }
+                if (precisaEthereum && !conta) {
+                  void conectarPhantom().catch(falha);
                   return;
                 }
                 void acceptMission();
               }}
             >
-              {sealing ? etapa || "Aguardando a Phantom…" : conta ? "Assinar e enviar" : "Conectar Phantom"}
+              {sealing
+                ? etapa || "Aguardando a Phantom…"
+                : precisaSolana && !contaSolana
+                  ? "Conectar Phantom na Solana"
+                  : precisaEthereum && !conta
+                    ? "Conectar Phantom"
+                    : "Assinar e enviar"}
             </Button>
-            {!routeLoading && route && !route.auditoria.ok ? (
+            {carteiraPronta && !routeLoading && route && !route.auditoria.ok ? (
               <p className="text-sm text-muted-foreground">O envio fica bloqueado até a conferência fechar.</p>
             ) : null}
           </div>

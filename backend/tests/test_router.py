@@ -1,3 +1,4 @@
+import base64
 import unittest
 from decimal import Decimal
 
@@ -15,6 +16,7 @@ from app.router_defi import (
     build_route,
     chamada_approve,
     classificar_falha,
+    conferir_lote_jupiter,
     lote_jupiter,
     ordem_limite,
     pack_v0,
@@ -161,6 +163,71 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(message["kind"], "sell")
         self.assertEqual(message["feeAmount"], "0")
         self.assertEqual(message["buyAmount"], str(int(Decimal("0.18") * Decimal("2932.5") * Decimal("0.99") * Decimal(10) ** 6)))
+
+    def test_solana_swap_waits_for_the_wallet_then_clears_the_send(self) -> None:
+        orders = [
+            {
+                "tipo": "venda",
+                "simbolo": "SOL",
+                "simbolo_par": "USDC",
+                "rede": "solana",
+                "quantidade": 0.038653,
+                "preco_usd": 113.47,
+                "gatilho_usd": None,
+            },
+            {
+                "tipo": "compra",
+                "simbolo": "USDC",
+                "simbolo_par": "SOL",
+                "rede": "solana",
+                "quantidade": 1.0,
+                "preco_usd": 1.0,
+                "gatilho_usd": None,
+            },
+            {
+                "tipo": "stop",
+                "simbolo": "SOL",
+                "simbolo_par": None,
+                "rede": "solana",
+                "quantidade": 0.038653,
+                "preco_usd": 113.47,
+                "gatilho_usd": 96.45,
+            },
+            {
+                "tipo": "pool",
+                "simbolo": "SOL",
+                "simbolo_par": "USDC",
+                "rede": "solana",
+                "quantidade": 0.038653,
+                "preco_usd": 113.47,
+                "gatilho_usd": None,
+            },
+        ]
+        preview = build_route(orders)
+        self.assertFalse(preview["auditoria"]["ok"])
+        self.assertIsNone(preview["solana"])
+        self.assertIsNone(preview["limite"])
+        self.assertTrue(any("Phantom" in aviso for aviso in preview["avisos"]))
+        self.assertTrue(any("Aave" in aviso for aviso in preview["avisos"]))
+        self.assertFalse(any("lista Ethereum" in aviso for aviso in preview["avisos"]))
+
+        lote = lote_jupiter(SOL, BLOCKHASH, bytes([1, 2, 3]))
+        route = build_route(orders, pagador_solana=SOL, lotes_solana=[lote])
+        self.assertTrue(route["auditoria"]["ok"])
+        self.assertEqual(route["solana"]["lotes"][0]["serialized_base64"], lote["serialized_base64"])
+        labels = [item["rotulo"] for item in route["auditoria"]["itens"]]
+        self.assertIn("Proteção de queda: fora deste lote", labels)
+        protecao = next(item for item in route["auditoria"]["itens"] if "Proteção" in item["rotulo"])
+        self.assertFalse(protecao["ok"])
+
+    def test_jupiter_transaction_must_belong_to_the_wallet(self) -> None:
+        packed = lote_jupiter(SOL, BLOCKHASH, bytes([1]))
+        raw = base64.b64decode(packed["serialized_base64"])
+        with self.assertRaises(ValueError):
+            conferir_lote_jupiter(raw, "11111111111111111111111111111111")
+        checked = conferir_lote_jupiter(raw, SOL)
+        self.assertEqual(checked["pagador"], SOL)
+        self.assertFalse(checked["custodia"])
 
     def test_game_dialogs_for_the_three_failures(self) -> None:
         self.assertEqual(classificar_falha("insufficient funds for gas"), FALHA_FUNDOS)
