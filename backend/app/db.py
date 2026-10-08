@@ -132,3 +132,59 @@ def clear_positions() -> int:
             return cursor.rowcount
         finally:
             conn.close()
+
+
+def meta_get(key: str) -> str | None:
+    with _lock:
+        conn = connect()
+        try:
+            row = conn.execute("select value from meta where key = ?", (key,)).fetchone()
+            return None if row is None else str(row["value"])
+        finally:
+            conn.close()
+
+
+def meta_set(key: str, value: str) -> None:
+    with _lock:
+        conn = connect()
+        try:
+            conn.execute(
+                """
+                insert into meta (key, value) values (?, ?)
+                on conflict(key) do update set value = excluded.value
+                """,
+                (key, value),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def replace_chain(chain: str, rows: list[dict]) -> None:
+    """Troca as posições de uma rede pelas lidas agora. Outras redes ficam."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock:
+        conn = connect()
+        try:
+            conn.execute("delete from positions where chain = ?", (chain,))
+            for row in rows:
+                if float(row["amount"]) <= 0:
+                    continue
+                conn.execute(
+                    """
+                    insert into positions (id, symbol, name, chain, amount, price_usd, created_at)
+                    values (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        uuid.uuid4().hex[:12],
+                        row["symbol"],
+                        row["name"],
+                        chain,
+                        float(row["amount"]),
+                        float(row["price_usd"]),
+                        now,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()

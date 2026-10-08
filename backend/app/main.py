@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.db import clear_positions, delete_position, init_db, insert_position, list_positions
 from app.reino import router as reino_router
+from app import wallet_sync
 
 AI_ENGINE_URL = os.environ.get("AI_ENGINE_URL", "http://127.0.0.1:8092").rstrip("/")
 
@@ -63,6 +64,19 @@ class PositionIn(BaseModel):
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "backend"}
+
+
+class CarteiraIn(BaseModel):
+    solana: str | None = None
+
+
+@app.post("/carteira/sincronizar")
+async def sincronizar_carteira(body: CarteiraIn | None = None) -> dict[str, Any]:
+    chave = None if body is None else body.solana
+    try:
+        return await wallet_sync.sincronizar_solana(chave)
+    except ValueError as exc:
+        return {"atualizado": False, "solana": chave, "aviso": str(exc)}
 
 
 @app.get("/positions")

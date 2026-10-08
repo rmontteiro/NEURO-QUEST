@@ -7,6 +7,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { sincronizarCarteira } from "@/lib/carteira";
 import { Analysis, ForecastBook, Position, errorMessage, pct, qty, usd } from "@/lib/types";
 
 const CHAINS = ["ethereum", "solana", "bitcoin", "base", "arbitrum", "polygon", "optimism"];
@@ -72,12 +73,18 @@ export function Desk() {
   const [forecast, setForecast] = useState<ForecastBook | null>(null);
   const [forecastError, setForecastError] = useState<string | null>(null);
   const [forecastLoading, setForecastLoading] = useState(true);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     setAnalysisError(null);
     try {
+      const sync = await sincronizarCarteira();
+      setSyncNote(
+        sync.atualizado ? "SOL e stablecoins na Solana foram lidos da rede." : sync.aviso,
+      );
       const response = await fetch("/api/backend/positions", { cache: "no-store" });
       const payload = await readJson(response);
       if (!response.ok) {
@@ -135,6 +142,34 @@ export function Desk() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [reload, loadForecasts]);
+
+  async function lerPhantom() {
+    setFormError(null);
+    if (!window.isSecureContext) {
+      setSyncNote("A Phantom só conecta em HTTPS. Abra a mesa pelo endereço seguro e tente de novo.");
+      return;
+    }
+    const win = window as unknown as {
+      phantom?: { solana?: { isPhantom?: boolean; connect: () => Promise<{ publicKey: { toString: () => string } }> } };
+      solana?: { isPhantom?: boolean; connect: () => Promise<{ publicKey: { toString: () => string } }> };
+    };
+    const solana = win.phantom?.solana?.isPhantom ? win.phantom.solana : win.solana?.isPhantom ? win.solana : null;
+    if (!solana) {
+      setSyncNote("A Phantom não está neste navegador.");
+      return;
+    }
+    setSyncing(true);
+    try {
+      const connected = await solana.connect();
+      const sync = await sincronizarCarteira(connected.publicKey.toString());
+      setSyncNote(sync.atualizado ? "A mesa gravou o saldo da Phantom." : sync.aviso);
+      await reload();
+    } catch {
+      setSyncNote("A Phantom não conectou. Nada foi alterado na mesa.");
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -208,9 +243,9 @@ export function Desk() {
             Lastro
           </p>
           <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-            Mesa de portfólio Web3. Os preços da carteira são os que você lançou.
-            A previsão diária, quando o turno ocioso grava, vem da Binance e do FRED e não altera esses lançamentos.
-            A assessoria traduz essa leitura em proposta e risco, sem executar nada sozinha.
+            Mesa de portfólio. Com a Phantom ligada, SOL, USDC e USDT na Solana passam a ser o saldo da rede,
+            com preço da Binance. O lançamento manual continua para o que essa leitura não vê.
+            A assessoria traduz a mesa em proposta e risco, sem executar nada sozinha.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -356,12 +391,20 @@ export function Desk() {
         <div className="flex flex-col gap-6">
           <Card>
             <CardHeader>
-              <CardTitle>Posições</CardTitle>
-              <CardDescription>
-                Cada linha é um lançamento manual: ativo, rede, quantidade e preço em dólar.
-              </CardDescription>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="space-y-1">
+                  <CardTitle>Posições</CardTitle>
+                  <CardDescription>
+                    SOL e stablecoins na Solana são relidos da Phantom. O restante continua lançado à mão.
+                  </CardDescription>
+                </div>
+                <Button type="button" variant="outline" disabled={syncing || loading} onClick={() => void lerPhantom()}>
+                  {syncing ? "Lendo a Phantom…" : "Ler a Phantom"}
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
+              {syncNote ? <p className="text-sm leading-relaxed text-muted-foreground">{syncNote}</p> : null}
               {loading && positions === null ? (
                 <div className="space-y-2" aria-busy="true" aria-live="polite">
                   <div className="h-14 animate-pulse rounded-lg bg-muted" />

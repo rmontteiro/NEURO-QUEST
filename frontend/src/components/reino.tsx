@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { sincronizarCarteira } from "@/lib/carteira";
 import { magiaFalhou, metodoAusente } from "@/lib/magia";
 import { errorMessage, pct, usd } from "@/lib/types";
 
@@ -243,6 +244,7 @@ export function Reino() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    await sincronizarCarteira().catch(() => undefined);
     const nextSpeeches: Record<string, Speech | null> = {};
     const nextErrors: Record<string, string> = {};
     await Promise.all(
@@ -380,6 +382,8 @@ export function Reino() {
     const connected = await solana.connect();
     const key = connected.publicKey.toString();
     setContaSolana(key);
+    await sincronizarCarteira(key);
+    await load();
     return key;
   }
 
@@ -511,7 +515,9 @@ export function Reino() {
                 "confirmed",
               );
             } catch {
-              setSeal("A Phantom assinou o lote na Solana. A confirmação da rede ainda não voltou.");
+              await sincronizarCarteira(solanaKey);
+              await load();
+              setSeal("A Phantom assinou o lote na Solana. A confirmação da rede ainda não voltou. A mesa já foi relida.");
               setSealHref(href);
               return;
             }
@@ -519,8 +525,12 @@ export function Reino() {
         }
       }
 
+      if (solanaKey) {
+        await sincronizarCarteira(solanaKey);
+        await load();
+      }
       const feito = enviados.length > 0 ? ` Enviado: ${enviados.join("; ")}.` : "";
-      setSeal(`A Phantom assinou e a rede recebeu a movimentação.${feito} A assessoria não guarda a chave.`);
+      setSeal(`A Phantom assinou e a rede recebeu a movimentação.${feito} A mesa foi relida. A assessoria não guarda a chave.`);
       setSealHref(href);
     } catch (error) {
       const feito = enviados.length > 0 ? ` Já enviado antes da falha: ${enviados.join("; ")}. ` : "";

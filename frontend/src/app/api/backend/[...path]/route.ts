@@ -10,6 +10,7 @@ const ALLOWED = new Set([
   "transacao-nao-assinada",
   "rota-missao",
   "previsoes",
+  "carteira",
 ]);
 
 function backendBase(): string {
