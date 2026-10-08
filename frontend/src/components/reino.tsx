@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { SalaDoTrono } from "@/components/sala-do-trono";
+import { Badge } from "@/components/ui/badge";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { magiaFalhou, metodoAusente } from "@/lib/magia";
-import { errorMessage, usd } from "@/lib/types";
-import type { ActorId } from "@/lib/rotina";
+import { errorMessage, pct, usd } from "@/lib/types";
 
 type Order = {
   tipo: string;
@@ -72,13 +73,25 @@ const ROUTES = [
 ] as const;
 
 const SOLANA_RPC = process.env.NEXT_PUBLIC_SOLANA_RPC || "https://solana-rpc.publicnode.com";
-const BAR_COLORS = ["#39ff6a", "#f2e27a", "#7ec8ff", "#ff8b7a", "#d7a6ff"];
 const BAND: Record<string, string> = {
-  alta: "ALTA",
-  moderada: "MODERADA",
-  contida: "CONTIDA",
-  vazia: "VAZIA",
+  alta: "Concentração alta",
+  moderada: "Concentração moderada",
+  contida: "Concentração contida",
+  vazia: "Sem leitura",
 };
+
+const ORDER_LABEL: Record<string, string> = {
+  venda: "Venda",
+  compra: "Compra",
+  stop: "Proteção",
+  pool: "Alocação",
+};
+
+const BRIEFS = [
+  { key: "ceo", titulo: "Estratégia", texto: "O que a carteira está dizendo." },
+  { key: "cio", titulo: "Propostas", texto: "O que faria sentido ajustar, ainda sem executar." },
+  { key: "cco", titulo: "Risco", texto: "Onde a carteira está concentrada." },
+] as const;
 
 type SolanaProvider = {
   isPhantom?: boolean;
@@ -114,7 +127,7 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-function ListaDoVigia({
+function Conferencia({
   route,
   loading,
   error,
@@ -123,25 +136,31 @@ function ListaDoVigia({
   loading: boolean;
   error: string | null;
 }) {
+  if (loading) {
+    return <p className="text-sm text-muted-foreground">Conferindo contratos, slippage e proteção antes da assinatura.</p>;
+  }
+  if (error) {
+    return (
+      <p role="alert" className="text-sm text-destructive">
+        {error}
+      </p>
+    );
+  }
+  if (!route) {
+    return <p className="text-sm text-muted-foreground">A conferência ainda não voltou da mesa.</p>;
+  }
   return (
-    <div>
-      <h3 className="text-[10px] text-[#f2e27a]">AUDITORIA DO VIGIA</h3>
-      {loading ? <p className="mt-3 text-[10px] leading-5">O Vigia mede o fosso antes da Phantom.</p> : null}
-      {error ? (
-        <p role="alert" className="mt-3 text-[10px] leading-5">
-          {error}
-        </p>
-      ) : null}
-      {!loading && !error && route ? (
-        <ul className="mt-3 space-y-2 text-[10px] leading-5" aria-label="Lista de validação">
-          {route.auditoria.itens.map((item) => (
-            <li key={item.rotulo}>{item.rotulo}</li>
-          ))}
-        </ul>
-      ) : null}
-      {!loading && !error && !route ? <p className="mt-3 text-[10px]">A auditoria ainda não voltou da mesa.</p> : null}
-      {route && route.avisos.length > 0 ? (
-        <ul className="mt-3 space-y-1 text-[8px] leading-4 text-[#f2e27a]">
+    <div className="space-y-3">
+      <ul className="space-y-2 text-sm" aria-label="Conferência antes da assinatura">
+        {route.auditoria.itens.map((item) => (
+          <li key={item.rotulo} className="flex items-center justify-between gap-3">
+            <span>{item.rotulo}</span>
+            <Badge variant={item.ok ? "secondary" : "destructive"}>{item.ok ? "Em ordem" : "Pendente"}</Badge>
+          </li>
+        ))}
+      </ul>
+      {route.avisos.length > 0 ? (
+        <ul className="space-y-1 text-sm text-muted-foreground">
           {route.avisos.map((aviso) => (
             <li key={aviso}>{aviso}</li>
           ))}
@@ -155,8 +174,6 @@ export function Reino() {
   const [speeches, setSpeeches] = useState<Record<string, Speech | null>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<ActorId | null>(null);
-  const [shown, setShown] = useState("");
   const [seal, setSeal] = useState<string | null>(null);
   const [sealHref, setSealHref] = useState<string | null>(null);
   const [sealing, setSealing] = useState(false);
@@ -175,13 +192,13 @@ export function Reino() {
           const response = await fetch(`/api/backend/${route.path}`, { cache: "no-store" });
           const payload = await readJson(response);
           if (!response.ok) {
-            nextErrors[route.key] = errorMessage(payload, "O conselho não respondeu.");
+            nextErrors[route.key] = errorMessage(payload, "A assessoria não respondeu.");
             nextSpeeches[route.key] = null;
             return;
           }
           nextSpeeches[route.key] = payload as Speech;
         } catch {
-          nextErrors[route.key] = "A mesa perdeu o conselho.";
+          nextErrors[route.key] = "A mesa perdeu a leitura da assessoria.";
           nextSpeeches[route.key] = null;
         }
       }),
@@ -203,7 +220,7 @@ export function Reino() {
     });
     const payload = await readJson(response);
     if (!response.ok) {
-      throw new Error(errorMessage(payload, "O Vigia não conseguiu auditar a rota."));
+      throw new Error(errorMessage(payload, "A conferência da rota não ficou pronta."));
     }
     return payload as MissionRoute;
   }, []);
@@ -228,7 +245,7 @@ export function Reino() {
         } catch (error) {
           if (cancel) return;
           setRoute(null);
-          setRouteError(error instanceof Error ? error.message : "O Vigia não respondeu.");
+          setRouteError(error instanceof Error ? error.message : "A conferência não respondeu.");
         } finally {
           if (!cancel) setRouteLoading(false);
         }
@@ -240,38 +257,10 @@ export function Reino() {
     };
   }, [askRoute]);
 
-  const speech = selected ? speeches[selected] : null;
-  const speechError = selected ? errors[selected] : null;
-  const fullText = loading
-    ? "O arauto abre o pergaminho do conselho."
-    : speechError || speech?.fala || "Este lugar está em silêncio.";
-
-  useEffect(() => {
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduced) {
-      setShown(fullText);
-      return;
-    }
-    setShown("");
-    let index = 0;
-    const timer = window.setInterval(() => {
-      index += 1;
-      setShown(fullText.slice(0, index));
-      if (index >= fullText.length) window.clearInterval(timer);
-    }, 16);
-    return () => window.clearInterval(timer);
-  }, [fullText, selected]);
-
   const orders = speeches.cio?.dados.ordens ?? [];
   const book = speeches.cio?.dados.carteira ?? [];
   const concentration = speeches.cco?.dados.concentracao ?? speeches.cio?.dados.concentracao;
   const offline = !loading && ROUTES.every((route) => errors[route.key]);
-  const lines = [
-    speeches.ceo?.fala,
-    speeches.cio?.fala,
-    speeches.cco?.fala,
-  ].filter((line): line is string => Boolean(line));
-
   async function switchToEthereum(evm: EvmProvider) {
     try {
       await evm.request({
@@ -346,7 +335,7 @@ export function Reino() {
       const evm = phantomEthereum();
       const solana = phantomSolana();
       if (!evm && !solana) {
-        setSeal("A Phantom não está neste navegador. A lista do Vigia fica na mesa e nenhuma transação sai.");
+        setSeal("A Phantom não está neste navegador. A conferência fica registrada e nenhuma transação foi enviada.");
         return;
       }
 
@@ -382,7 +371,7 @@ export function Reino() {
       const fresh = await askRoute(solanaKey, ethereum, blockhash);
       setRoute(fresh);
       if ((fresh.chamadas.length > 0 || fresh.limite) && !ethereum) {
-        setSeal("Esta missão assina na Ethereum. Abre a Phantom nessa rede. Nada foi enviado.");
+        setSeal("Estas propostas assinam na Ethereum. Abra a Phantom nessa rede. Nada foi enviado.");
         return;
       }
       if (fresh.solana && !solanaKey) {
@@ -390,7 +379,7 @@ export function Reino() {
         return;
       }
       if (!fresh.auditoria.ok || !fresh.enviar || fresh.custodia) {
-        throw new Error("A auditoria do Vigia não liberou o círculo.");
+        throw new Error("A conferência de risco não liberou o envio.");
       }
 
       if (fresh.limite) {
@@ -422,13 +411,13 @@ export function Reino() {
             "confirmed",
           );
         } catch {
-          setSeal("A Phantom assinou o lote Solana. A confirmação ainda não voltou.");
+          setSeal("A Phantom assinou o lote na Solana. A confirmação da rede ainda não voltou.");
           setSealHref(href);
           return;
         }
       }
 
-      setSeal("O círculo fechou. Tu assinaste o swap, o depósito no Aave e a permissão da ordem limitada. A agência não guarda a chave.");
+      setSeal("As propostas foram assinadas: swap, depósito no Aave e permissão da ordem limitada. A assessoria não guarda a chave.");
       setSealHref(href);
     } catch (error) {
       setSpell(magiaFalhou(error));
@@ -437,204 +426,158 @@ export function Reino() {
     }
   }
 
-  const maxWeight = Math.max(...book.map((item) => item.peso), 0.01);
+  const total = speeches.ceo?.dados.total_usd ?? speeches.cio?.dados.total_usd ?? 0;
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-3 py-4 sm:px-5 sm:py-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-[10px] text-[#f2e27a]">NEURO-QUEST CAPITAL</p>
-          <h1 className="mt-2 text-sm text-[#f4f7ef] sm:text-base">SALA DO TRONO</h1>
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
+      <header className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-end sm:justify-between">
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">Neuro-Quest Capital</p>
+          <h1 className="font-display text-4xl leading-none tracking-tight italic sm:text-5xl">Assessoria</h1>
+          <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            Três leituras da mesma carteira: o que ela mostra, que ajuste está proposto e onde está o risco.
+            Nada é executado até a sua assinatura. A assessoria não guarda a chave.
+          </p>
         </div>
-        <Link href="/" className="pixel-btn inline-flex items-center px-3 py-2 text-[10px] no-underline">
-          MESA
+        <Link href="/" className={buttonVariants({ variant: "outline" })}>
+          Voltar à mesa
         </Link>
       </header>
 
       {offline ? (
-        <div role="alert" className="pixel-panel flex flex-col gap-3 px-3 py-3 text-[10px] leading-relaxed sm:flex-row sm:items-center sm:justify-between">
-          <p>O conselho não alcançou a API.</p>
-          <button type="button" className="pixel-btn px-3 py-2 text-[10px]" onClick={() => void load()}>
-            TENTAR DE NOVO
-          </button>
+        <div
+          role="alert"
+          className="flex flex-col gap-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+        >
+          <p>A assessoria não alcançou a API.</p>
+          <Button type="button" variant="outline" onClick={() => void load()}>
+            Tentar de novo
+          </Button>
         </div>
       ) : null}
 
-      <div className="relative">
-        <div className="mb-3 lg:absolute lg:top-3 lg:left-3 lg:z-30 lg:mb-0 lg:w-56">
-          <section className="border-[3px] border-[#8ea0b8] bg-[#10141c] text-[#9dff7a] shadow-[4px_4px_0_#0c1018]" aria-label="Terminal do reino">
-            <header className="flex items-center justify-between border-b border-[#8ea0b8] bg-[#c5d0de] px-2 py-1 text-[8px] text-[#1a120e]">
-              <span>TERMINAL</span>
-              <span aria-hidden="true">□</span>
-            </header>
-            <div className="space-y-2 px-2 py-2 text-[8px] leading-relaxed" aria-live="polite">
-              {loading ? <p>Arauto: buscando o conselho...</p> : null}
-              {!loading && lines.length === 0 ? <p>Arauto: o pergaminho ainda está em branco.</p> : null}
-              {lines.slice(0, 3).map((line) => (
-                <p key={line.slice(0, 24)}>{line.length > 90 ? `${line.slice(0, 90)}...` : line}</p>
-              ))}
-            </div>
-          </section>
-        </div>
+      <section className="grid gap-3 lg:grid-cols-3" aria-label="Leituras da assessoria">
+        {BRIEFS.map((brief) => {
+          const speech = speeches[brief.key];
+          const speechError = errors[brief.key];
+          return (
+            <Card key={brief.key}>
+              <CardHeader>
+                <CardDescription>{brief.texto}</CardDescription>
+                <CardTitle className="text-xl">{speech?.agente ?? brief.titulo}</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm leading-relaxed">
+                {loading ? <p className="text-muted-foreground">Lendo a carteira…</p> : null}
+                {!loading && speechError ? <p role="alert">{speechError}</p> : null}
+                {!loading && !speechError ? <p>{speech?.fala ?? "Esta leitura ainda não chegou."}</p> : null}
+                {speech?.aviso ? <p className="mt-3 text-muted-foreground">{speech.aviso}</p> : null}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </section>
 
-        <SalaDoTrono paused={selected !== null} selected={selected} onSelect={setSelected} />
-
-        <div className="mt-3 lg:absolute lg:bottom-3 lg:left-3 lg:z-30 lg:mt-0 lg:w-56">
-          <section className="border-[3px] border-[#8ea0b8] bg-[#10141c] text-[#9dff7a] shadow-[4px_4px_0_#0c1018]" aria-label="Tabuleiro do reino">
-            <header className="flex items-center justify-between border-b border-[#8ea0b8] bg-[#c5d0de] px-2 py-1 text-[8px] text-[#1a120e]">
-              <span>TABULEIRO DO REINO</span>
-              <span aria-hidden="true">□</span>
-            </header>
-            <div className="px-2 py-2">
-              <div className="flex h-10 items-end gap-1" aria-hidden="true">
-                {(book.length > 0 ? book : [{ simbolo: "—", peso: 0.2 }]).map((item, index) => (
-                  <div
-                    key={item.simbolo}
-                    className="w-full"
-                    style={{
-                      height: `${Math.max(8, (item.peso / maxWeight) * 100)}%`,
-                      background: BAR_COLORS[index % BAR_COLORS.length],
-                    }}
-                  />
-                ))}
-              </div>
-              <p className="mt-2 text-[8px] leading-relaxed">
-                {concentration?.band
-                  ? `FAIXA ${BAND[concentration.band] ?? concentration.band.toUpperCase()}`
-                  : "FAIXA —"}
-                {typeof concentration?.hhi === "number" ? ` · HHI ${concentration.hhi.toFixed(2)}` : ""}
+      <section className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <Card>
+          <CardHeader>
+            <CardTitle>Composição</CardTitle>
+            <CardDescription>
+              {concentration?.band ? BAND[concentration.band] ?? concentration.band : "Sem leitura"}
+              {typeof concentration?.hhi === "number" ? ` · HHI ${concentration.hhi.toFixed(2)}` : ""}
+              {loading ? "" : ` · ${usd.format(total)}`}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {book.length === 0 ? (
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                Nenhuma posição para medir. Lance um ativo na mesa e a composição aparece aqui.
               </p>
-              <p className="text-[8px]">
-                LASTRO {loading ? "..." : usd.format(speeches.ceo?.dados.total_usd ?? 0)}
-              </p>
-            </div>
-          </section>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {ROUTES.map((route) => (
-          <button
-            key={route.key}
-            type="button"
-            className="pixel-btn px-3 py-2 text-[10px]"
-            aria-pressed={selected === route.key}
-            onClick={() => setSelected(route.key)}
-          >
-            {route.key === "ceo" ? "REGENTE" : route.key === "cio" ? "MISSÕES" : "FOSSO"}
-          </button>
-        ))}
-      </div>
-
-      {selected ? (
-        <section className="pixel-panel relative px-3 pt-4 pb-3" aria-live="polite">
-          <button
-            type="button"
-            className="absolute top-1 right-2 text-[10px] text-[#b6ff8a]"
-            onClick={() => setSelected(null)}
-            aria-label="Fechar diálogo"
-          >
-            X
-          </button>
-          <p className="text-[10px] text-[#f2e27a]">{speech?.cargo ?? "CONSELHO"}</p>
-          <h2 className="mt-2 text-xs text-[#f4f7ef]">{speech?.agente ?? "Em silêncio"}</h2>
-          <p className="mt-3 max-h-40 overflow-y-auto text-[10px] leading-5 text-[#d8ffc4]">{shown}</p>
-          {speech?.aviso ? <p className="mt-2 text-[8px] text-[#f2e27a]">{speech.aviso}</p> : null}
-
-          {selected === "cio" ? (
-            <div className="mt-4 border-t-2 border-[#1f5c32] pt-3">
-              <h3 className="text-[10px] text-[#f2e27a]">PORTFÓLIO PROPOSTO</h3>
-              {book.length === 0 ? (
-                <p className="mt-3 text-[10px] leading-5">
-                  Nenhuma posição para medir. Lance um ativo na mesa e o CIO desenha as barras.
-                </p>
-              ) : (
-                <div className="mt-3 flex h-28 items-end gap-2" aria-label="Barras do portfólio">
-                  {book.map((item, index) => (
-                    <div key={item.simbolo} className="flex h-full min-w-0 flex-1 flex-col justify-end gap-1">
-                      <div
-                        className="w-full"
-                        style={{
-                          height: `${Math.max(12, (item.peso / maxWeight) * 100)}%`,
-                          background: BAR_COLORS[index % BAR_COLORS.length],
-                          boxShadow: "2px 0 0 #06140c",
-                        }}
-                      />
-                      <span className="truncate text-center text-[8px]">{item.simbolo}</span>
+            ) : (
+              <ul className="space-y-3">
+                {book.map((item) => (
+                  <li key={item.simbolo}>
+                    <div className="mb-1 flex items-baseline justify-between gap-3 text-sm">
+                      <span className="font-mono">{item.simbolo}</span>
+                      <span className="font-mono tabular-nums text-muted-foreground">{pct.format(item.peso)}</span>
                     </div>
-                  ))}
-                </div>
-              )}
-              {orders.length > 0 ? (
-                <ul className="mt-3 grid gap-1 text-[8px] leading-4 sm:grid-cols-2">
-                  {orders.map((order) => (
-                    <li key={`${order.tipo}-${order.simbolo}-${order.simbolo_par}`}>
-                      {order.tipo.toUpperCase()} {order.simbolo}
-                      {order.simbolo_par ? `/${order.simbolo_par}` : ""} · {order.quantidade}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-3 text-[10px]">Sem ordens enquanto a carteira estiver vazia.</p>
-              )}
-              <div className="mt-4">
-                <ListaDoVigia route={route} loading={routeLoading} error={routeError} />
-              </div>
-              <p className="mt-3 text-[8px] leading-4 text-[#d8ffc4]">
-                Aceitar move o que tu aprovares: swap na Uniswap, depósito no Aave V3 e a permissão exata da ordem
-                limitada. Na Solana, o swap da Jupiter entra na mesma Transaction V0 quando a cotação chega. A agência
-                não guarda a chave. A taxa da rede é tua.
-              </p>
-              <button
-                type="button"
-                className="pixel-btn mt-3 w-full px-3 py-3 text-[10px] sm:w-auto"
-                disabled={sealing || loading || routeLoading || orders.length === 0 || !route?.auditoria.ok}
-                onClick={() => void acceptMission()}
-              >
-                {sealing ? "PEDINDO O SELO..." : "[ ACEITAR MISSÃO ]"}
-              </button>
-              {seal ? (
-                <p role="status" className="mt-3 text-[10px] leading-5">
-                  {seal}{" "}
-                  {sealHref ? (
-                    <a className="text-[#f2e27a] underline" href={sealHref} target="_blank" rel="noreferrer">
-                      Ver na rede
-                    </a>
-                  ) : null}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
+                    <div className="h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+                      <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(2, item.peso * 100)}%` }} />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
 
-          {selected === "cco" ? (
-            <div className="mt-4 border-t-2 border-[#1f5c32] pt-3">
-              <ListaDoVigia route={route} loading={routeLoading} error={routeError} />
-              <p className="mt-3 text-[8px] leading-4 text-[#d8ffc4]">
-                O selo só segue para a Phantom com as três marcas. Slippage acima de 1%, contrato fora da lista ou
-                stop ausente deixa o botão quieto.
-              </p>
-            </div>
+        <Card>
+          <CardHeader>
+            <CardTitle>Propostas</CardTitle>
+            <CardDescription>Ordens sugeridas a partir do livro lançado. Ainda não foram enviadas.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {orders.length === 0 ? (
+              <p className="text-sm leading-relaxed text-muted-foreground">Sem propostas enquanto a carteira estiver vazia.</p>
+            ) : (
+              <ul className="divide-y divide-border text-sm">
+                {orders.map((order) => (
+                  <li key={`${order.tipo}-${order.simbolo}-${order.simbolo_par}`} className="flex items-baseline justify-between gap-3 py-2 first:pt-0 last:pb-0">
+                    <span>
+                      {ORDER_LABEL[order.tipo] ?? order.tipo} {order.simbolo}
+                      {order.simbolo_par ? `/${order.simbolo_par}` : ""}
+                    </span>
+                    <span className="font-mono tabular-nums text-muted-foreground">{order.quantidade}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Antes de assinar</CardTitle>
+          <CardDescription>
+            A assinatura envia o que você aprovar: swap na Uniswap, depósito no Aave V3 e a permissão exata da ordem
+            limitada. Na Solana, o swap da Jupiter entra na mesma transação quando a cotação chega. A taxa de rede é sua.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <Conferencia route={route} loading={routeLoading} error={routeError} />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <Button
+              type="button"
+              disabled={sealing || loading || routeLoading || orders.length === 0 || !route?.auditoria.ok}
+              onClick={() => void acceptMission()}
+            >
+              {sealing ? "Aguardando a carteira…" : "Assinar propostas"}
+            </Button>
+            {!routeLoading && route && !route.auditoria.ok ? (
+              <p className="text-sm text-muted-foreground">O envio fica bloqueado até a conferência fechar.</p>
+            ) : null}
+          </div>
+          {seal ? (
+            <p role="status" className="text-sm leading-relaxed">
+              {seal}{" "}
+              {sealHref ? (
+                <a className="underline" href={sealHref} target="_blank" rel="noreferrer">
+                  Ver na rede
+                </a>
+              ) : null}
+            </p>
           ) : null}
-        </section>
-      ) : (
-        <p className="text-[10px] leading-5 text-[#c5d0c0]">
-          Clique num conselheiro. O regente ocupa o trono, o mestre lê as missões, a vigia mede o fosso. Eles andam,
-          digitam e atendem o telefone entre uma fala e outra.
-        </p>
-      )}
+        </CardContent>
+      </Card>
 
       {spell ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-[#06140c]/80 p-4 sm:items-center">
-          <div role="alertdialog" aria-labelledby="magia-titulo" aria-describedby="magia-fala" className="pixel-panel w-full max-w-md px-4 py-4">
-            <p id="magia-titulo" className="text-[10px] text-[#f2e27a]">
-              O CÍRCULO QUEBROU
-            </p>
-            <p id="magia-fala" className="mt-3 text-[10px] leading-5">
-              {spell}
-            </p>
-            <button type="button" className="pixel-btn mt-4 px-3 py-2 text-[10px]" onClick={() => setSpell(null)}>
-              ENTENDIDO
-            </button>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-background/80 p-4 sm:items-center">
+          <div role="alertdialog" aria-labelledby="falha-titulo" aria-describedby="falha-texto" className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-lg">
+            <p id="falha-titulo" className="font-display text-2xl italic">A ordem não foi enviada</p>
+            <p id="falha-texto" className="mt-3 text-sm leading-relaxed">{spell}</p>
+            <Button type="button" className="mt-4" variant="outline" onClick={() => setSpell(null)}>
+              Fechar
+            </Button>
           </div>
         </div>
       ) : null}

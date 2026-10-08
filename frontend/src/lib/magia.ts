@@ -1,11 +1,13 @@
 export const FALHA_FUNDOS =
-  "A magia falhou, aventureiro! O alforje não tem o ouro desta travessia.";
+  "A transação não seguiu: saldo insuficiente para o valor e a taxa de rede.";
 export const FALHA_SLIPPAGE =
-  "A magia falhou, aventureiro! O preço escorregou além do limite de 1%.";
+  "A transação não seguiu: o preço saiu do limite de 1%.";
 export const FALHA_RECUSA =
-  "A magia falhou, aventureiro! Tu recusaste o selo no limiar da Phantom.";
+  "A assinatura foi recusada na carteira. Nenhuma ordem foi enviada.";
 export const FALHA_ROTA =
-  "A magia falhou, aventureiro! A rota se desfez antes do círculo.";
+  "A rota não pôde ser concluída. Nenhuma ordem nova foi enviada.";
+
+const PRONTAS = new Set([FALHA_FUNDOS, FALHA_SLIPPAGE, FALHA_RECUSA, FALHA_ROTA]);
 
 function texto(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -25,7 +27,7 @@ function codigo(error: unknown): number | undefined {
 
 export function magiaFalhou(error: unknown): string {
   const message = texto(error);
-  if (message.startsWith("A magia falhou, aventureiro!")) return message;
+  if (PRONTAS.has(message)) return message;
   const blob = message.toLowerCase();
   const code = codigo(error);
   if (code === 4001 || /user rejected|rejected the request|recus|denied/.test(blob)) {

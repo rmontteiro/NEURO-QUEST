@@ -31,7 +31,7 @@ class ReinoTests(unittest.TestCase):
         self.assertEqual(ceo.status_code, 200)
         self.assertEqual(cio.status_code, 200)
         self.assertEqual(cco.status_code, 200)
-        self.assertIn("Trono de Circuito", ceo.json()["fala"])
+        self.assertIn("carteira lançada", ceo.json()["fala"])
         self.assertIn("venda ETH", cio.json()["fala"])
         self.assertIn("HHI", cco.json()["fala"])
         for response in (ceo, cio, cco):

@@ -210,11 +210,12 @@ export function Desk() {
           <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
             Mesa de portfólio Web3. Os preços da carteira são os que você lançou.
             A previsão diária, quando o turno ocioso grava, vem da Binance e do FRED e não altera esses lançamentos.
+            A assessoria traduz essa leitura em proposta e risco, sem executar nada sozinha.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link href="/reino" className={buttonVariants({ variant: "outline" })}>
-            Conselho do reino
+            Abrir a assessoria
           </Link>
           <Badge variant={online ? "secondary" : "destructive"}>
             {loading ? "Consultando a carteira" : online ? "Carteira no ar" : "Carteira indisponível"}

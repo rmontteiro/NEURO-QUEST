@@ -118,9 +118,9 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(
             labels,
             [
-                "Slippage max: 1%",
-                "Smart Contract Validated: Yes",
-                "Stop-Loss set: Yes",
+                "Slippage máximo: 1%",
+                "Contratos conferidos: sim",
+                "Proteção definida: sim",
             ],
         )
         self.assertTrue(route["auditoria"]["ok"])

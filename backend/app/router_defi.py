@@ -64,10 +64,10 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_SOL = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOL_MINTS = {"SOL": SOL_MINT, "USDC": USDC_SOL}
 
-FALHA_FUNDOS = "A magia falhou, aventureiro! O alforje não tem o ouro desta travessia."
-FALHA_SLIPPAGE = "A magia falhou, aventureiro! O preço escorregou além do limite de 1%."
-FALHA_RECUSA = "A magia falhou, aventureiro! Tu recusaste o selo no limiar da Phantom."
-FALHA_ROTA = "A magia falhou, aventureiro! A rota se desfez antes do círculo."
+FALHA_FUNDOS = "A transação não seguiu: saldo insuficiente para o valor e a taxa de rede."
+FALHA_SLIPPAGE = "A transação não seguiu: o preço saiu do limite de 1%."
+FALHA_RECUSA = "A assinatura foi recusada na carteira. Nenhuma ordem foi enviada."
+FALHA_ROTA = "A rota não pôde ser concluída. Nenhuma ordem nova foi enviada."
 
 
 def classificar_falha(texto: str, code: int | None = None) -> str:
@@ -371,12 +371,12 @@ def _auditar(chamadas: list[dict[str, Any]], solana: dict[str, Any] | None, limi
         "ok": bool(ok),
         "slippage_max_bps": SLIPPAGE_BPS,
         "itens": [
-            {"rotulo": "Slippage max: 1%", "ok": slippage_ok},
+            {"rotulo": "Slippage máximo: 1%", "ok": slippage_ok},
             {
-                "rotulo": "Smart Contract Validated: Yes" if contracts_ok else "Smart Contract Validated: No",
+                "rotulo": "Contratos conferidos: sim" if contracts_ok else "Contratos conferidos: não",
                 "ok": contracts_ok,
             },
-            {"rotulo": "Stop-Loss set: Yes" if stop_ok else "Stop-Loss set: No", "ok": stop_ok},
+            {"rotulo": "Proteção definida: sim" if stop_ok else "Proteção definida: não", "ok": stop_ok},
         ],
         "motivos": motivos,
     }
